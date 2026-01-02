@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+k8s_testlog_downloader.egg-info/
+venv/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# Cache
+.k8s-test-analyzer/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.md
+.env

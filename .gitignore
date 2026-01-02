@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+k8s_test_analyzer.egg-info/
+
+# Virtual environment
+venv/
+.venv/
+
+# ChromaDB
+chroma_db/
+
+# Environment files (generated from .env.template)
+.env

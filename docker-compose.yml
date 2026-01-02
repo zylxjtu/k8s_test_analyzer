@@ -1,0 +1,21 @@
+services:
+  k8s-test-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FASTMCP_PORT: ${FASTMCP_PORT:-8978}
+    container_name: k8s-test-analyzer
+    ports:
+      - "${FASTMCP_PORT:-8978}:${FASTMCP_PORT:-8978}"
+    volumes:
+      - ${PROJECTS_ROOT}:/projects
+      - ${PROJECTS_ROOT}/container_cache:/root/.cache  # Mount a cache folder into the container
+    environment:
+      - FASTMCP_PORT=${FASTMCP_PORT:-8978}
+      - PROJECTS_ROOT=/projects
+      - DEFAULT_DASHBOARD=${DEFAULT_DASHBOARD:-sig-windows-signal}
+      - FOLDERS_TO_INDEX=${FOLDERS_TO_INDEX}  # Use env variable for folders
+      - ADDITIONAL_IGNORE_DIRS=${ADDITIONAL_IGNORE_DIRS}  # Additional directories to ignore
+      - ADDITIONAL_IGNORE_FILES=${ADDITIONAL_IGNORE_FILES}  # Additional files to ignore
+    restart: unless-stopped

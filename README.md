@@ -1,0 +1,299 @@
+# Kubernetes Test Analyzer
+
+A Python tool for downloading, indexing, and analyzing Kubernetes test logs from TestGrid. Features semantic search powered by ChromaDB and LlamaIndex, with both CLI and MCP (Model Context Protocol) server interfaces for AI-assisted test analysis.
+
+## Features
+
+- 📥 Download test logs from TestGrid and GCS (Google Cloud Storage)
+- 📊 Parse JUnit XML test results
+- 🔍 Semantic search over logs using ChromaDB and LlamaIndex
+- 🤖 MCP integration for Claude Desktop and Claude Code
+- 🖥️ CLI that mirrors MCP tools for testing and standalone use
+- 🐳 Docker support for easy deployment
+
+## Installation
+
+### Using a Virtual Environment (Recommended)
+
+```bash
+# Create and activate a Python 3.11+ virtual environment
+python3.11 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Upgrade pip and setuptools
+pip install --upgrade pip setuptools
+
+# Install the package in editable mode
+pip install -e .
+
+# Install dependencies for the MCP server and indexing
+pip install -r requirements.txt
+```
+
+### Dependency Management
+
+The `requirements.txt` file contains pinned versions of direct dependencies:
+- ✅ **Exact versions** for reproducible builds
+- ✅ **Direct dependencies only** (pip resolves transitive dependencies automatically)
+- ✅ **Readable and maintainable** organization by category
+- ✅ **Docker-friendly** (avoids system packages)
+
+To regenerate with all transitive dependencies pinned:
+```bash
+pip freeze > requirements.txt
+```
+
+### Managing the Virtual Environment
+
+```bash
+# Activate the virtual environment
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Verify you're using the correct Python
+python --version  # Should show Python 3.11.x
+
+# Deactivate when done
+deactivate
+```
+
+## Quick Start
+
+### CLI Usage
+
+The CLI provides commands that mirror the MCP server tools, allowing you to test functionality without running the MCP server:
+
+```bash
+# Download and index test logs from a specific tab
+k8s-test-analyzer download --tab capz-windows-1-33-serial-slow
+
+# Download and index all tabs from a dashboard
+k8s-test-analyzer download-all
+
+# Search indexed logs (requires specifying which tab's logs to search)
+k8s-test-analyzer search "timeout error" --tab capz-windows-1-33-serial-slow
+
+# Get index statistics
+k8s-test-analyzer index-stats
+
+# List available tabs for a dashboard
+k8s-test-analyzer list-tabs
+
+# List recent builds for a tab
+k8s-test-analyzer list-builds --tab capz-windows-1-33-serial-slow
+
+# Get dashboard summary (shows passing/failing tabs)
+k8s-test-analyzer summary
+
+# Get test status for all tabs (fetches latest build for each)
+k8s-test-analyzer status
+```
+
+### Python API
+
+```python
+from k8s_testlog_downloader.data_collector import DataCollector
+
+# Initialize collector
+collector = DataCollector()
+
+# List tabs in default dashboard
+tabs = collector.list_tabs()
+print(tabs)
+
+# Fetch latest test data from a tab
+data = collector.collect_from_tab("capz-windows-1-33-serial-slow")
+print(f"Job: {data['job_name']}")
+print(f"Build: {data['build_id']}")
+print(f"Status: {data['build_info']['status']}")
+print(f"Failed tests: {data['test_results']['failed']}")
+```
+
+## CLI Commands
+
+The CLI provides two sets of commands:
+
+### Indexing Commands (Mirror MCP Tools)
+
+| Command | Description | MCP Tool Equivalent |
+|---------|-------------|---------------------|
+| `download` | Download and index test logs | `download_test` |
+| `download-all` | Download and index all tabs | `download_all_latest` |
+| `search` | Semantic search over indexed logs | `search_code` |
+| `reindex` | Re-index a specific project | `reindex_folder` |
+| `reindex-all` | Re-index all cached folders | `reindex_all` |
+| `index-stats` | Get indexing statistics | `get_index_stats` |
+
+### Data Retrieval Commands
+
+| Command | Description |
+|---------|-------------|
+| `fetch` | Fetch test data from a tab (without indexing) |
+| `list-tabs` | List available tabs for a dashboard |
+| `list-builds` | List recent builds for a job |
+| `summary` | Get dashboard summary (passing/failing/flaky tabs) |
+| `status` | Get test results for latest build of each tab |
+
+## MCP Server
+
+### Running the MCP Server
+
+The MCP server provides AI assistants with tools to analyze Kubernetes test logs:
+
+```bash
+# Run directly
+python mcp_server.py
+
+# Or with Docker
+cd docker && docker-compose up -d
+```
+
+Connect via SSE: `http://localhost:8978/sse`
+
+### Configuring Claude Code
+
+To use the MCP server with Claude Code CLI:
+
+1. Ensure the MCP server is running (see above)
+
+2. Add the server to Claude Code:
+```bash
+claude mcp add --transport sse k8s-test-analyzer http://localhost:8978/sse
+```
+
+3. Verify the connection:
+```bash
+claude mcp list
+```
+
+You should see `k8s-test-analyzer` listed and connected.
+
+4. Restart your Claude Code session if needed to load the new MCP tools.
+
+**Note**: If running on a remote server, replace `localhost` with your server's IP address or hostname.
+
+### Configuring Claude Desktop
+
+To use the MCP server with Claude Desktop, add this to your Claude Desktop configuration file:
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "k8s-test-analyzer": {
+      "url": "http://localhost:8978/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+Then restart Claude Desktop.
+
+### MCP Tools Available
+
+| Tool | Description |
+|------|-------------|
+| `download_test` | Download test logs from TestGrid/GCS and index for semantic search |
+| `download_all_latest` | Download and index test data for all tabs in a dashboard |
+| `list_recent_builds` | List recent builds for a tab |
+| `list_dashboard_tabs` | List tabs in a dashboard |
+| `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
+| `get_tab_status` | Get test results for latest build of tabs specified |
+| `search_code` | Semantic search over indexed code/logs |
+| `reindex_folder` | Force re-index a specific project/folder |
+| `reindex_all` | Force re-index all cached project folders |
+| `get_index_stats` | Get indexing statistics (collections and document counts) |
+
+## Docker Deployment
+
+```bash
+# Generate .env file from template (expands ${HOME} and other variables)
+./generate-env.sh
+
+# Build and run
+docker compose build
+docker compose up -d
+
+# View logs
+docker compose logs -f
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FASTMCP_PORT` | `8978` | MCP server port |
+| `PROJECTS_ROOT` | `${HOME}/.k8s-test-analyzer/cache` | Root directory for projects to index |
+| `DEFAULT_DASHBOARD` | `sig-windows-signal` | Default TestGrid dashboard |
+| `FOLDERS_TO_INDEX` | (auto-discover) | Comma-separated folders to index |
+| `ADDITIONAL_IGNORE_DIRS` | | Extra directories to ignore |
+
+## Configuration
+
+### Environment Setup
+
+The project uses `.env.template` with variable placeholders (e.g., `${HOME}`) that get expanded by `generate-env.sh`:
+
+```bash
+# Generate .env from template
+./generate-env.sh
+```
+
+This creates a `.env` file with expanded paths. You can also manually create/edit `.env`:
+
+```bash
+DEFAULT_DASHBOARD=sig-windows-signal
+PROJECTS_ROOT=/home/yourusername/.k8s-test-analyzer/cache
+FASTMCP_PORT=8978
+```
+
+**Note**: `.env.template` is tracked in git, but `.env` is gitignored (contains user-specific paths).
+
+### ChromaDB Storage
+
+The ChromaDB database is stored at `${PROJECTS_ROOT}/chroma_db` (default: `~/.k8s-test-analyzer/cache/chroma_db`). This location is shared between the CLI and Docker container, ensuring both use the same indexed data.
+
+## Architecture
+
+The project uses a modular architecture with shared business logic:
+
+```
+k8s-test-analyzer/
+├── core.py                     # Shared business logic (used by both CLI and MCP)
+├── mcp_server.py               # MCP server - tool wrappers calling core.py
+├── cli.py                      # CLI entry point - mirrors MCP tools
+├── local_indexing.py           # ChromaDB initialization and indexing logic
+├── Dockerfile                  # Docker image definition
+├── docker-compose.yml          # Docker Compose configuration
+├── generate-env.sh             # Script to generate .env from .env.template
+├── .env.template               # Environment template (tracked in git)
+├── k8s_testlog_downloader/     # Data collection library
+│   ├── __init__.py
+│   ├── data_collector.py       # Main data collection logic
+│   ├── gcs_client.py           # GCS download client
+│   ├── testgrid_client.py      # TestGrid API client
+│   ├── junit_parser.py         # JUnit XML parser
+│   └── models.py               # Data models
+├── chroma_db/                  # ChromaDB vector database (generated)
+├── pyproject.toml              # Package configuration
+├── requirements.txt            # Dependencies
+└── README.md
+```
+
+### Key Components
+
+- **core.py**: Contains all business logic for downloading, indexing, and searching. Both the CLI and MCP server call these functions.
+- **mcp_server.py**: Thin wrapper that exposes core.py functions as MCP tools via FastMCP.
+- **cli.py**: CLI application that exposes core.py functions as command-line commands.
+- **local_indexing.py**: ChromaDB/LlamaIndex integration for vector storage and semantic search.
+
+This architecture ensures that:
+1. CLI and MCP server have identical behavior (they use the same code)
+2. You can test MCP functionality via the CLI without running an MCP server
+3. Business logic is centralized and easy to maintain
+
+## License
+
+Apache License 2.0
