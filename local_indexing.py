@@ -73,6 +73,15 @@ config = None
 chroma_client = None
 embedding_function = None
 
+# Asyncio lock for serializing indexing operations
+# This prevents concurrent writes to ChromaDB which can corrupt the HNSW index
+import asyncio
+_indexing_lock = asyncio.Lock()
+
+# Threading lock for completion marker updates (sync operations)
+import threading
+_completion_marker_lock = threading.Lock()
+
 
 def sanitize_collection_name(folder_name: str) -> str:
     """Convert folder name to a valid collection name by replacing forward slashes with underscores."""
@@ -418,11 +427,13 @@ def process_and_index_documents(
                         f"Could not create parser for {parser_language}, "
                         f"falling back to text-based splitting: {e}"
                     )
-                    # Fall back to text-based splitting
-                    nodes = _split_text_to_nodes(doc.text, file_path, file_name)
+                    # Fall back to text-based splitting, pass build_id if available
+                    extra_meta = {"build_id": doc.metadata.get("build_id")} if doc.metadata.get("build_id") else None
+                    nodes = _split_text_to_nodes(doc.text, file_path, file_name, extra_meta)
             else:
-                # For non-code files, manually split by lines
-                nodes = _split_text_to_nodes(doc.text, file_path, file_name)
+                # For non-code files, manually split by lines, pass build_id if available
+                extra_meta = {"build_id": doc.metadata.get("build_id")} if doc.metadata.get("build_id") else None
+                nodes = _split_text_to_nodes(doc.text, file_path, file_name, extra_meta)
 
             if not nodes:
                 logger.warning(f"No nodes generated for {file_path}")
@@ -453,6 +464,10 @@ def process_and_index_documents(
                     "end_line": end_line,
                 }
 
+                # Include build_id from node metadata (inherited from document)
+                if node.metadata.get("build_id"):
+                    metadata["build_id"] = node.metadata["build_id"]
+
                 ids.append(chunk_id)
                 texts.append(node.text)
                 metadatas.append(metadata)
@@ -478,8 +493,15 @@ def process_and_index_documents(
     )
 
 
-def _split_text_to_nodes(text: str, file_path: str, file_name: str) -> List[TextNode]:
-    """Split text into nodes using line-based chunking."""
+def _split_text_to_nodes(text: str, file_path: str, file_name: str, extra_metadata: dict = None) -> List[TextNode]:
+    """Split text into nodes using line-based chunking.
+
+    Args:
+        text: The text content to split
+        file_path: Path to the file
+        file_name: Name of the file
+        extra_metadata: Additional metadata to include in each node (e.g., build_id)
+    """
     nodes = []
     lines = text.split("\n")
     chunk_size = 40
@@ -497,92 +519,365 @@ def _split_text_to_nodes(text: str, file_path: str, file_name: str) -> List[Text
         if not chunk_text.strip():
             continue
 
+        metadata = {
+            "start_line_number": start_idx + 1,
+            "end_line_number": end_idx,
+            "file_path": file_path,
+            "file_name": file_name,
+        }
+
+        # Include any extra metadata (like build_id) from the parent document
+        if extra_metadata:
+            metadata.update(extra_metadata)
+
         node = TextNode(
             text=chunk_text,
-            metadata={
-                "start_line_number": start_idx + 1,
-                "end_line_number": end_idx,
-                "file_path": file_path,
-                "file_name": file_name,
-            }
+            metadata=metadata
         )
         nodes.append(node)
 
     return nodes
 
 
+def _get_completed_builds(collection_name: str) -> set:
+    """Get set of build IDs that have been fully indexed in a collection.
+
+    Uses a completion marker document to track which builds finished indexing.
+    This prevents partially indexed builds (from interrupted indexing) from
+    being skipped on subsequent runs.
+
+    Args:
+        collection_name: Name of the ChromaDB collection
+
+    Returns:
+        Set of build ID strings that are fully indexed
+    """
+    try:
+        if chroma_client is None:
+            return set()
+
+        collection = chroma_client.get_collection(
+            name=collection_name,
+            embedding_function=embedding_function
+        )
+
+        # Look for the completion marker document
+        marker_id = "_completed_builds_marker"
+        result = collection.get(ids=[marker_id], include=["metadatas"])
+
+        if not result or not result.get("metadatas") or not result["metadatas"]:
+            return set()
+
+        # Completed builds stored as comma-separated string in metadata
+        completed_str = result["metadatas"][0].get("completed_builds", "")
+        if not completed_str:
+            return set()
+
+        return set(completed_str.split(","))
+    except Exception:
+        return set()
+
+
+def _mark_build_completed(collection_name: str, build_id: str) -> bool:
+    """Mark a build as fully indexed by adding it to the completion marker.
+
+    Uses a lock to prevent race conditions when multiple tasks mark builds
+    as completed simultaneously (read-modify-write pattern).
+
+    Args:
+        collection_name: Name of the ChromaDB collection
+        build_id: Build ID that finished indexing
+
+    Returns:
+        True if successful, False otherwise
+    """
+    with _completion_marker_lock:
+        try:
+            if chroma_client is None:
+                return False
+
+            collection = chroma_client.get_or_create_collection(
+                name=collection_name,
+                embedding_function=embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
+
+            marker_id = "_completed_builds_marker"
+
+            # Get existing completed builds (inside lock to prevent race)
+            completed_builds = _get_completed_builds(collection_name)
+            completed_builds.add(str(build_id))
+
+            # Update the marker document (upsert)
+            collection.upsert(
+                ids=[marker_id],
+                documents=["Completion marker - do not delete"],
+                metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
+                           "is_marker": True}]
+            )
+
+            logger.debug(f"Marked build {build_id} as completed in {collection_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error marking build {build_id} as completed: {e}")
+            return False
+
+
+def _unmark_build_completed(collection_name: str, build_id: str) -> bool:
+    """Remove a build from the completion marker (e.g., when deleting a build).
+
+    Uses a lock to prevent race conditions when multiple tasks modify the
+    completion marker simultaneously (read-modify-write pattern).
+
+    Args:
+        collection_name: Name of the ChromaDB collection
+        build_id: Build ID to remove from completed list
+
+    Returns:
+        True if successful, False otherwise
+    """
+    with _completion_marker_lock:
+        try:
+            if chroma_client is None:
+                return False
+
+            collection = chroma_client.get_or_create_collection(
+                name=collection_name,
+                embedding_function=embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
+
+            marker_id = "_completed_builds_marker"
+
+            # Get existing completed builds and remove this one (inside lock)
+            completed_builds = _get_completed_builds(collection_name)
+            completed_builds.discard(str(build_id))
+
+            if completed_builds:
+                # Update the marker document
+                collection.upsert(
+                    ids=[marker_id],
+                    documents=["Completion marker - do not delete"],
+                    metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
+                               "is_marker": True}]
+                )
+            else:
+                # No completed builds left, delete the marker
+                try:
+                    collection.delete(ids=[marker_id])
+                except Exception:
+                    pass
+
+            logger.debug(f"Removed build {build_id} from completed list in {collection_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing build {build_id} from completed list: {e}")
+            return False
+
+
+def _get_indexed_build_ids(collection_name: str) -> set:
+    """Get set of build IDs that are already indexed in a collection.
+
+    Note: This returns all builds with chunks in the collection, including
+    partially indexed builds. Use _get_completed_builds() to check for
+    builds that finished indexing completely.
+
+    Args:
+        collection_name: Name of the ChromaDB collection
+
+    Returns:
+        Set of build ID strings that have any chunks indexed
+    """
+    try:
+        if chroma_client is None:
+            return set()
+
+        collection = chroma_client.get_collection(
+            name=collection_name,
+            embedding_function=embedding_function
+        )
+
+        # Get all metadatas to extract build IDs
+        all_docs = collection.get(include=["metadatas"])
+
+        if not all_docs or not all_docs.get("metadatas"):
+            return set()
+
+        indexed_builds = set()
+        for metadata in all_docs["metadatas"]:
+            # Skip marker documents
+            if metadata.get("is_marker"):
+                continue
+            # Check for explicit build_id metadata field
+            build_id = metadata.get("build_id")
+            if build_id:
+                indexed_builds.add(str(build_id))
+
+        return indexed_builds
+    except Exception:
+        return set()
+
+
+def _get_build_folders(folder_path: str) -> list:
+    """Get list of build folders (numeric IDs) in a project folder.
+
+    Args:
+        folder_path: Path to the project folder
+
+    Returns:
+        List of build ID strings found in the folder
+    """
+    build_folders = []
+    try:
+        for item in os.listdir(folder_path):
+            item_path = os.path.join(folder_path, item)
+            if os.path.isdir(item_path) and item.isdigit():
+                build_folders.append(item)
+    except Exception:
+        pass
+    return build_folders
+
+
 async def index_project(project_name: str, force: bool = False) -> dict:
     """Index a project folder after download.
-    
+
+    This function supports incremental indexing - it will only index new builds
+    that aren't already in the collection. Use force=True to re-index everything.
+
+    If indexing is interrupted, partially indexed builds will be re-indexed on
+    the next run (only fully completed builds are marked as done).
+
+    IMPORTANT: This function acquires an async lock to prevent concurrent indexing
+    operations which can corrupt ChromaDB's HNSW index.
+
     Args:
         project_name: The GCS job name / project folder name
-        force: If True, re-index even if collection exists
-        
+        force: If True, delete existing collection and re-index everything
+
     Returns:
         dict with indexing results
     """
+    # Acquire lock to prevent concurrent indexing (protects ChromaDB HNSW index)
+    async with _indexing_lock:
+        return await _index_project_impl(project_name, force)
+
+
+async def _index_project_impl(project_name: str, force: bool = False) -> dict:
+    """Internal implementation of index_project (called with lock held)."""
     try:
         folder_path = os.path.join(config["projects_root"], project_name)
-        
+
         if not os.path.exists(folder_path):
             return {"success": False, "error": f"Folder not found: {project_name} (looked in {folder_path})"}
-        
+
         collection_name = sanitize_collection_name(project_name)
-        
-        # Check if collection already exists
-        if not force:
+
+        # Get build folders in the project directory
+        all_build_folders = _get_build_folders(folder_path)
+
+        if force:
+            # Force mode: delete existing collection and re-index everything
             try:
-                existing = chroma_client.get_collection(
-                    name=collection_name,
-                    embedding_function=embedding_function
-                )
-                doc_count = existing.count()
-                logger.info(f"Collection {collection_name} already exists with {doc_count} chunks, skipping")
+                chroma_client.delete_collection(name=collection_name)
+                logger.info(f"Deleted existing collection: {collection_name}")
+            except Exception:
+                pass
+            builds_to_index = set(all_build_folders)
+            completed_builds = set()
+        else:
+            # Incremental mode: only index builds not marked as completed
+            # This uses completion markers, not just presence of chunks
+            completed_builds = _get_completed_builds(collection_name)
+            builds_to_index = set(all_build_folders) - completed_builds
+
+            if not builds_to_index:
+                doc_count = 0
+                try:
+                    existing = chroma_client.get_collection(
+                        name=collection_name,
+                        embedding_function=embedding_function
+                    )
+                    doc_count = existing.count()
+                except Exception:
+                    pass
+
+                logger.info(f"All {len(all_build_folders)} builds already indexed for {project_name}")
                 return {
                     "success": True,
                     "project": project_name,
                     "collection": collection_name,
                     "message": "Already indexed",
                     "documents_indexed": 0,
-                    "existing_chunks": doc_count
+                    "existing_chunks": doc_count,
+                    "builds_indexed": list(completed_builds)
                 }
-            except Exception:
-                pass  # Collection doesn't exist, proceed with indexing
-        
-        # Load all documents from the folder
-        documents = load_documents(
-            folder_path,
-            ignore_dirs=set(config["ignore_dirs"]),
-            file_extensions=set(config["file_extensions"]),
-            ignore_files=set(config["ignore_files"])
-        )
-        
-        if not documents:
+
+        logger.info(f"Indexing {len(builds_to_index)} new builds for {project_name} "
+                   f"({len(completed_builds)} already completed)")
+
+        # Index each build separately so we can mark completion individually
+        # This handles interruption gracefully - partially indexed builds will be re-done
+        total_documents = 0
+        newly_indexed = []
+
+        for build_id in builds_to_index:
+            build_path = os.path.join(folder_path, build_id)
+
+            # Check if this build has partial chunks (from interrupted indexing)
+            # If so, delete them before re-indexing
+            partial_chunks = _get_indexed_build_ids(collection_name)
+            if build_id in partial_chunks and build_id not in completed_builds:
+                logger.info(f"Removing partial index for interrupted build {build_id}")
+                delete_build_from_index(collection_name, build_id)
+
+            build_docs = load_documents(
+                build_path,
+                ignore_dirs=set(config["ignore_dirs"]),
+                file_extensions=set(config["file_extensions"]),
+                ignore_files=set(config["ignore_files"])
+            )
+
+            if not build_docs:
+                # No documents but mark as completed (empty build)
+                _mark_build_completed(collection_name, build_id)
+                newly_indexed.append(build_id)
+                continue
+
+            # Add build_id as metadata so we can identify which build each chunk belongs to
+            for doc in build_docs:
+                if hasattr(doc, 'metadata'):
+                    doc.metadata['build_id'] = build_id
+
+            # Index this build's documents
+            process_and_index_documents(build_docs, collection_name, "chroma_db")
+
+            # Mark build as completed AFTER successful indexing
+            _mark_build_completed(collection_name, build_id)
+
+            total_documents += len(build_docs)
+            newly_indexed.append(build_id)
+            logger.info(f"Completed indexing build {build_id}: {len(build_docs)} documents")
+
+        if not newly_indexed:
             return {
                 "success": True,
                 "project": project_name,
-                "message": "No indexable documents found",
-                "documents_indexed": 0
+                "message": "No indexable documents found in new builds",
+                "documents_indexed": 0,
+                "builds_checked": list(builds_to_index)
             }
-        
-        # Delete existing collection to re-index fresh (only reached if force=True or collection didn't exist)
-        try:
-            chroma_client.delete_collection(name=collection_name)
-            logger.info(f"Deleted existing collection: {collection_name}")
-        except Exception:
-            pass  # Collection doesn't exist, that's fine
-        
-        # Index documents
-        process_and_index_documents(documents, collection_name, "chroma_db")
-        
-        logger.info(f"Successfully indexed {len(documents)} documents for {project_name}")
+
+        total_indexed = len(completed_builds) + len(newly_indexed)
+        logger.info(f"Successfully indexed {total_documents} documents from {len(newly_indexed)} new builds for {project_name}")
         return {
             "success": True,
             "project": project_name,
             "collection": collection_name,
-            "documents_indexed": len(documents)
+            "documents_indexed": total_documents,
+            "new_builds_indexed": newly_indexed,
+            "total_builds_indexed": total_indexed
         }
-        
+
     except Exception as e:
         logger.error(f"Error indexing project {project_name}: {e}")
         return {"success": False, "error": str(e)}
@@ -637,9 +932,27 @@ def get_config():
     return config
 
 
+def get_indexing_lock():
+    """Get the indexing lock for use by external code.
+
+    This lock should be acquired before any ChromaDB write operations
+    to prevent concurrent writes that can corrupt the HNSW index.
+
+    Usage:
+        async with get_indexing_lock():
+            # Perform ChromaDB write operations
+
+    Returns:
+        asyncio.Lock instance
+    """
+    return _indexing_lock
+
+
 def delete_build_from_index(collection_name: str, build_id: str) -> dict:
     """
     Delete all indexed chunks for a specific build from a ChromaDB collection.
+
+    Uses ChromaDB's `where` clause for efficient server-side filtering by build_id.
 
     Args:
         collection_name: Name of the collection (job name)
@@ -661,23 +974,16 @@ def delete_build_from_index(collection_name: str, build_id: str) -> dict:
         except Exception as e:
             return {"success": False, "error": f"Collection not found: {collection_name}"}
 
-        # Get all documents in the collection to find ones matching this build
-        # ChromaDB doesn't support prefix queries on metadata, so we need to get all and filter
-        all_docs = collection.get(include=["metadatas"])
+        # Use where filter to get only IDs for this build (more efficient)
+        result = collection.get(
+            where={"build_id": str(build_id)},
+            include=[]  # Only need IDs, not content
+        )
 
-        if not all_docs or not all_docs.get("ids"):
-            return {"success": True, "deleted_chunks": 0, "message": "No documents in collection"}
-
-        # Find IDs where file_path starts with the build_id
-        ids_to_delete = []
-        for doc_id, metadata in zip(all_docs["ids"], all_docs["metadatas"]):
-            file_path = metadata.get("file_path", "")
-            # file_path format: "build_id/filename" or "build_id/subdir/filename"
-            if file_path.startswith(f"{build_id}/") or file_path.startswith(f"{build_id}\\"):
-                ids_to_delete.append(doc_id)
-
-        if not ids_to_delete:
+        if not result or not result.get("ids"):
             return {"success": True, "deleted_chunks": 0, "message": f"No chunks found for build {build_id}"}
+
+        ids_to_delete = result["ids"]
 
         # Delete the chunks in batches (ChromaDB has limits on batch size)
         batch_size = 5000
@@ -685,9 +991,79 @@ def delete_build_from_index(collection_name: str, build_id: str) -> dict:
             batch = ids_to_delete[i:i + batch_size]
             collection.delete(ids=batch)
 
+        # Also remove from completion marker so it can be re-indexed
+        _unmark_build_completed(collection_name, build_id)
+
         logger.info(f"Deleted {len(ids_to_delete)} chunks for build {build_id} from {collection_name}")
         return {"success": True, "deleted_chunks": len(ids_to_delete)}
 
     except Exception as e:
         logger.error(f"Error deleting build {build_id} from index: {e}")
         return {"success": False, "error": str(e)}
+
+
+def get_build_chunks(collection_name: str, build_id: str, include_embeddings: bool = False) -> dict:
+    """
+    Get all indexed chunks for a specific build from a ChromaDB collection.
+
+    Uses ChromaDB's `where` filter for efficient server-side filtering by build_id,
+    rather than fetching all documents and filtering client-side.
+
+    Args:
+        collection_name: Name of the collection (job name)
+        build_id: Build ID whose chunks should be retrieved
+        include_embeddings: Whether to include embeddings in the result
+
+    Returns:
+        dict with chunks data including ids, documents, metadatas, and optionally embeddings
+    """
+    try:
+        if chroma_client is None:
+            return {"success": False, "error": "ChromaDB client not initialized", "chunks": []}
+
+        # Get the collection
+        try:
+            collection = chroma_client.get_collection(
+                name=collection_name,
+                embedding_function=embedding_function
+            )
+        except Exception:
+            return {"success": False, "error": f"Collection not found: {collection_name}", "chunks": []}
+
+        # Use ChromaDB's where filter for efficient server-side filtering
+        include_fields = ["metadatas", "documents"]
+        if include_embeddings:
+            include_fields.append("embeddings")
+
+        # Query with where clause - ChromaDB handles filtering efficiently
+        result = collection.get(
+            where={"build_id": str(build_id)},
+            include=include_fields
+        )
+
+        if not result or not result.get("ids"):
+            return {"success": True, "chunks": [], "message": f"No chunks found for build {build_id}"}
+
+        # Build chunk data from filtered results
+        chunks = []
+        for i, (doc_id, metadata, document) in enumerate(zip(
+            result["ids"],
+            result["metadatas"],
+            result["documents"]
+        )):
+            chunk_data = {
+                "id": doc_id,
+                "text": document,
+                "metadata": metadata,
+                "file_path": metadata.get("file_path", "")
+            }
+            if include_embeddings and result.get("embeddings"):
+                chunk_data["embedding"] = result["embeddings"][i]
+            chunks.append(chunk_data)
+
+        logger.info(f"Retrieved {len(chunks)} chunks for build {build_id} from {collection_name}")
+        return {"success": True, "chunks": chunks, "total": len(chunks)}
+
+    except Exception as e:
+        logger.error(f"Error getting chunks for build {build_id}: {e}")
+        return {"success": False, "error": str(e), "chunks": []}

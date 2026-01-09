@@ -143,13 +143,15 @@ The MCP server exposes these tools (all mirror CLI commands):
 | `download_test` | `download` | Download and index test logs for a specific tab |
 | `download_all_latest` | `download-all` | Download and index all tabs from a dashboard |
 | `search_log` | `search` | Semantic search over indexed logs |
+| `compare_build_logs` | `compare` | Compare logs between two builds (same-job or cross-job) |
+| `find_regression` | `find-regression` | Find and compare last pass with first fail from cached builds |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | `list-tabs` | List available tabs in a dashboard |
 | `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
 | `get_tab_status` | `status` | Get test results for latest build of each tab |
 | `reindex_folder` | `reindex` | Force re-index a specific project |
 | `reindex_all` | `reindex-all` | Force re-index all cached projects |
-| `get_index_stats` | `index-stats` | Get indexing statistics |
+| `get_index_status` | `index-stats` | Get indexing status (all tabs by default, or specific tab/build) |
 
 ## Important Concepts
 
@@ -182,6 +184,18 @@ The MCP server exposes these tools (all mirror CLI commands):
 ### Investigating Flaky Tests
 1. Download multiple builds: Use `download_test()` with different `build_id` parameters
 2. Search for common patterns: `search_log(query="race condition OR intermittent")`
+
+### Comparing Two Builds
+1. Download both builds: `download_test(tab="capz-windows-1-33-serial-slow", build_id="123")` and `download_test(tab="capz-windows-1-33-serial-slow", build_id="456")`
+2. Compare the logs: `compare_build_logs(tab_a="capz-windows-1-33-serial-slow", build_id_a="123", build_id_b="456")`
+3. The result contains categorized log chunks from both builds - analyze to find new/fixed errors, version changes, etc.
+
+### Finding When a Test Started Failing (Regression Analysis)
+1. First, download several recent builds: `download_all_latest()` or multiple `download_test()` calls
+2. Use `find_regression(tab="capz-windows-1-33-serial-slow")` to automatically find the regression point
+3. The tool scans cached builds, finds the last passing and first failing build, and compares them
+4. Returns early if the most recent build is passing (no regression to investigate)
+5. If all cached builds are failing, download older builds to find the regression point
 
 ## Dependencies
 

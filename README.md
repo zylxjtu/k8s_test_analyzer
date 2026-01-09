@@ -69,9 +69,11 @@ The CLI provides commands that mirror the MCP server tools, allowing you to test
 | `download` | Download and index test logs | `download_test` |
 | `download-all` | Download and index all tabs | `download_all_latest` |
 | `search` | Semantic search over indexed logs | `search_log` |
+| `compare` | Compare logs between two builds | `compare_build_logs` |
+| `find-regression` | Find and compare last pass with first fail | `find_regression` |
 | `reindex` | Re-index a specific project | `reindex_folder` |
 | `reindex-all` | Re-index all cached folders | `reindex_all` |
-| `index-stats` | Get indexing statistics | `get_index_stats` |
+| `index-stats` | Get indexing status for builds | `get_index_status` |
 | `cleanup` | Clean up old builds, keeping N most recent | (scheduled task) |
 
 #### Data Retrieval Commands
@@ -96,7 +98,13 @@ k8s-test-analyzer download-all
 # Search indexed logs (requires specifying which tab's logs to search)
 k8s-test-analyzer search "timeout error" --tab capz-windows-1-33-serial-slow
 
-# Get index statistics
+# Check index status of latest build for a specific tab
+k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow
+
+# Check index status of a specific build
+k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow --build 2009123456789
+
+# Check index status for latest build of all tabs (default)
 k8s-test-analyzer index-stats
 
 # List available tabs for a dashboard
@@ -116,6 +124,24 @@ k8s-test-analyzer cleanup --dry-run
 
 # Clean up old builds, keeping only 5 most recent per job
 k8s-test-analyzer cleanup --keep 5
+
+# Compare logs between two builds of the same job
+k8s-test-analyzer compare --tab capz-windows-1-33-serial-slow --build-a 123456 --build-b 789012
+
+# Compare latest builds between two different jobs
+k8s-test-analyzer compare --tab-a capz-windows-1-33-serial-slow --tab-b capz-windows-1-34-serial-slow
+
+# Find regression point (last pass vs first fail) from cached builds
+k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow
+
+# Find regression with more builds and custom filter
+k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow --max-builds 20 --filter errors
+
+# Re-index a specific project (required after schema changes)
+k8s-test-analyzer reindex ci-kubernetes-e2e-capz-1-33-windows-serial-slow
+
+# Re-index all cached projects
+k8s-test-analyzer reindex-all
 ```
 
 ## MCP Server
@@ -176,6 +202,30 @@ To use the MCP server with Claude Desktop, add this to your Claude Desktop confi
 
 Then restart Claude Desktop.
 
+### Configuring VS Code / GitHub Copilot
+
+VS Code supports MCP servers for use with GitHub Copilot agent mode. To add this MCP server:
+
+1. Open VS Code Settings (JSON) or create/edit `~/.vscode-server/data/User/mcp.json` (remote) or the equivalent local path
+
+2. Add the server configuration:
+```json
+{
+  "servers": {
+    "k8s-test-analyzer": {
+      "url": "http://localhost:8978/sse",
+      "type": "http"
+    }
+  }
+}
+```
+
+3. Reload VS Code to connect to the MCP server
+
+For more options including workspace-level configuration, see the [VS Code MCP documentation](https://code.visualstudio.com/docs/copilot/customization/mcp-servers#_other-options-to-add-an-mcp-server).
+
+**Note**: MCP support in VS Code/Copilot is evolving. Check the documentation for the latest configuration options.
+
 ### MCP Tools Available
 
 | Tool | Description |
@@ -187,9 +237,11 @@ Then restart Claude Desktop.
 | `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
 | `get_tab_status` | Get test results for latest build of tabs specified |
 | `search_log` | Semantic search over indexed logs |
+| `compare_build_logs` | Compare logs between two builds (same-job or cross-job) |
+| `find_regression` | Find and compare last pass with first fail from cached builds |
 | `reindex_folder` | Force re-index a specific project/folder |
 | `reindex_all` | Force re-index all cached project folders |
-| `get_index_stats` | Get indexing statistics (collections and document counts) |
+| `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
 
 ## Docker Deployment
 

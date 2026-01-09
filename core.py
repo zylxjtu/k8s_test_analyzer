@@ -19,6 +19,8 @@ from local_indexing import (
     get_config,
     delete_build_from_index,
     sanitize_collection_name,
+    get_build_chunks,
+    get_indexing_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,14 +46,17 @@ async def download_and_index(
 ) -> dict:
     """
     Download test logs and optionally index them.
-    
+
+    Indexing is incremental - only new builds will be indexed.
+    Already indexed builds are skipped unless force_reindex=True.
+
     Args:
         tab: TestGrid tab name
         dashboard: Dashboard name (uses default if not specified)
         build_id: Specific build ID (fetches latest if not specified)
         skip_indexing: Skip indexing after download
-        force_reindex: Force re-index even if already indexed
-    
+        force_reindex: Force delete collection and re-index all builds
+
     Returns:
         dict with download results and optional indexing results
     """
@@ -77,13 +82,16 @@ async def download_all_and_index(
 ) -> dict:
     """
     Download test logs for all tabs and optionally index them.
-    
+
+    Indexing is incremental - only new builds will be indexed.
+    Already indexed builds are skipped unless force_reindex=True.
+
     Args:
         dashboard: Dashboard name (uses default if not specified)
         limit: Maximum number of tabs to fetch
         skip_indexing: Skip indexing after download
-        force_reindex: Force re-index even if already indexed
-    
+        force_reindex: Force delete collections and re-index all builds
+
     Returns:
         dict with download results and indexing summary
     """
@@ -279,48 +287,140 @@ async def reindex_all_projects() -> dict:
     }
 
 
-async def get_index_stats() -> dict:
+async def get_all_latest_build_index_status(
+    dashboard: str = None,
+    tabs: list = None
+) -> dict:
     """
-    Get indexing statistics for all collections.
-    
+    Get the indexing status for the latest build of each tab.
+
+    Args:
+        dashboard: Dashboard name (optional)
+        tabs: List of tab names to check (optional, defaults to all tabs)
+
     Returns:
-        dict with collection statistics
+        dict with index status for each tab's latest build
     """
-    chroma_client = get_chroma_client()
-    embedding_function = get_embedding_function()
-    
-    if not chroma_client:
-        return {"error": "ChromaDB client not initialized"}
-    
-    collections = chroma_client.list_collections()
-    stats = {
-        "total_collections": len(collections),
-        "collections": []
-    }
-    
-    total_chunks = 0
-    for collection in collections:
-        # Handle both old API (strings) and new API (Collection objects)
-        collection_name = collection.name if hasattr(collection, 'name') else str(collection)
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+
+    # Get all tabs if not specified
+    if tabs is None:
+        tabs = c.list_tabs(dashboard)
+
+    results = []
+    for tab in tabs:
         try:
-            coll = chroma_client.get_collection(
-                name=collection_name,
-                embedding_function=embedding_function
-            )
-            count = coll.count()
-            total_chunks += count
-            stats["collections"].append({
-                "name": collection_name,
-                "chunks": count
-            })
+            job_name = c._get_gcs_job_name(dashboard, tab)
+            latest_build_id = _get_latest_build_id(job_name)
+
+            if not latest_build_id:
+                results.append({
+                    "tab": tab,
+                    "job_name": job_name,
+                    "status": "no_cached_builds",
+                    "error": "No cached builds found"
+                })
+                continue
+
+            # Get full status for this build
+            status = await get_build_index_status(tab, latest_build_id, dashboard)
+            results.append(status)
         except Exception as e:
-            stats["collections"].append({
-                "name": collection_name,
+            results.append({
+                "tab": tab,
+                "status": "error",
                 "error": str(e)
             })
-    
-    stats["total_chunks"] = total_chunks
-    return stats
+
+    # Summary counts
+    indexed_count = sum(1 for r in results if r.get("status") == "indexed")
+    cached_not_indexed = sum(1 for r in results if r.get("status") == "cached_not_indexed")
+    not_cached = sum(1 for r in results if r.get("status") in ("not_cached", "no_cached_builds"))
+    errors = sum(1 for r in results if r.get("status") == "error")
+
+    return {
+        "dashboard": dashboard,
+        "summary": {
+            "indexed": indexed_count,
+            "cached_not_indexed": cached_not_indexed,
+            "not_cached": not_cached,
+            "errors": errors,
+            "total": len(results)
+        },
+        "tabs": results
+    }
+
+
+async def get_build_index_status(
+    tab: str,
+    build_id: str,
+    dashboard: str = None
+) -> dict:
+    """
+    Get the indexing status of a specific build.
+
+    Args:
+        tab: TestGrid tab name
+        build_id: Build ID to check
+        dashboard: Dashboard name (optional)
+
+    Returns:
+        dict with build indexing status including:
+        - indexed: whether the build is fully indexed
+        - chunk_count: number of chunks for this build
+        - collection: the collection name
+        - cached: whether the build is cached on disk
+    """
+    from local_indexing import (
+        _get_completed_builds,
+        get_build_chunks,
+        sanitize_collection_name,
+        get_config
+    )
+
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+    job_name = c._get_gcs_job_name(dashboard, tab)
+    collection_name = sanitize_collection_name(job_name)
+    config = get_config()
+
+    result = {
+        "tab": tab,
+        "build_id": build_id,
+        "job_name": job_name,
+        "collection": collection_name,
+        "dashboard": dashboard
+    }
+
+    # Check if build is cached on disk
+    build_path = os.path.join(config["projects_root"], job_name, build_id)
+    result["cached"] = os.path.exists(build_path)
+
+    # Check if build is in the completed builds marker
+    completed_builds = _get_completed_builds(collection_name)
+    result["indexed"] = build_id in completed_builds
+
+    # Get chunk count for this build
+    chunks_result = get_build_chunks(collection_name, build_id)
+    if chunks_result.get("success"):
+        result["chunk_count"] = chunks_result.get("total", 0)
+    else:
+        result["chunk_count"] = 0
+        if chunks_result.get("error"):
+            result["chunks_error"] = chunks_result["error"]
+
+    # Add status summary
+    if result["indexed"] and result["chunk_count"] > 0:
+        result["status"] = "indexed"
+    elif result["cached"] and not result["indexed"]:
+        result["status"] = "cached_not_indexed"
+    elif not result["cached"]:
+        result["status"] = "not_cached"
+    else:
+        result["status"] = "unknown"
+
+    return result
 
 
 def list_builds(tab: str, dashboard: str = None, limit: int = 10) -> dict:
@@ -531,19 +631,30 @@ async def _cleanup_job_builds(job_name: str, job_path: str, keep_builds: int, dr
     }
 
     try:
-        # List all build folders (they are numeric build IDs)
-        build_folders = []
+        # List all build folders (they are numeric build IDs) with their timestamps
+        builds_with_timestamps = []
         for item in os.listdir(job_path):
             item_path = os.path.join(job_path, item)
             if os.path.isdir(item_path) and item.isdigit():
-                build_folders.append(item)
+                # Get timestamp from started.json for proper ordering
+                started_file = os.path.join(item_path, "started.json")
+                timestamp = 0
+                if os.path.exists(started_file):
+                    try:
+                        with open(started_file, 'r') as f:
+                            started_data = json.load(f)
+                            timestamp = started_data.get("timestamp", 0)
+                    except (json.JSONDecodeError, IOError):
+                        pass
+                builds_with_timestamps.append((item, timestamp))
 
-        if not build_folders:
+        if not builds_with_timestamps:
             result["message"] = "No build folders found"
             return result
 
-        # Sort by build ID (numeric, descending - newest first)
-        build_folders.sort(key=lambda x: int(x), reverse=True)
+        # Sort by timestamp (descending - newest first)
+        builds_with_timestamps.sort(key=lambda x: x[1], reverse=True)
+        build_folders = [b[0] for b in builds_with_timestamps]
 
         # Split into keeps and deletes
         builds_to_keep = build_folders[:keep_builds]
@@ -572,11 +683,14 @@ async def _cleanup_job_builds(job_name: str, job_path: str, keep_builds: int, dr
                 result["builds_deleted"] += 1
                 result["space_freed_mb"] += folder_size_mb
             else:
-                # Delete from ChromaDB index first
-                index_result = delete_build_from_index(collection_name, build_id)
-                chunks_deleted = index_result.get("deleted_chunks", 0)
+                # Acquire indexing lock to prevent concurrent ChromaDB writes
+                # This prevents HNSW index corruption during cleanup
+                async with get_indexing_lock():
+                    # Delete from ChromaDB index first
+                    index_result = delete_build_from_index(collection_name, build_id)
+                    chunks_deleted = index_result.get("deleted_chunks", 0)
 
-                # Delete the folder
+                # Delete the folder (outside the lock - doesn't need ChromaDB protection)
                 try:
                     shutil.rmtree(build_path)
                     result["builds_removed"].append({
@@ -616,3 +730,525 @@ def _get_folder_size_mb(folder_path: str) -> float:
             except (OSError, IOError):
                 pass
     return total_size / (1024 * 1024)
+
+
+import re
+
+
+def _get_latest_build_id(job_name: str) -> str:
+    """
+    Get the latest (most recent) build ID for a job from the cache folder.
+    Uses the timestamp from started.json to determine the newest build.
+
+    Args:
+        job_name: The GCS job name
+
+    Returns:
+        The latest build ID as a string, or None if no builds found
+    """
+    config = get_config()
+    job_path = os.path.join(config["projects_root"], job_name)
+
+    if not os.path.exists(job_path):
+        return None
+
+    # List all build folders and get their timestamps
+    builds_with_timestamps = []
+    for item in os.listdir(job_path):
+        item_path = os.path.join(job_path, item)
+        if os.path.isdir(item_path) and item.isdigit():
+            # Try to read timestamp from started.json
+            started_file = os.path.join(item_path, "started.json")
+            timestamp = 0
+            if os.path.exists(started_file):
+                try:
+                    with open(started_file, 'r') as f:
+                        started_data = json.load(f)
+                        timestamp = started_data.get("timestamp", 0)
+                except (json.JSONDecodeError, IOError):
+                    pass
+            builds_with_timestamps.append((item, timestamp))
+
+    if not builds_with_timestamps:
+        return None
+
+    # Sort by timestamp (descending) and return the latest
+    builds_with_timestamps.sort(key=lambda x: x[1], reverse=True)
+    return builds_with_timestamps[0][0]
+
+
+async def get_indexed_build_logs(
+    tab: str,
+    build_id: str = None,
+    dashboard: str = None,
+    filter_type: str = "interesting",
+    max_chunks: int = 50
+) -> dict:
+    """
+    Get indexed/chunked log data for a specific build from ChromaDB.
+
+    Args:
+        tab: TestGrid tab name
+        build_id: Build ID to retrieve (if None or "latest", uses most recent build)
+        dashboard: Dashboard name (uses default if not specified)
+        filter_type: "all", "interesting" (errors/failures), "errors", "failures"
+        max_chunks: Maximum number of chunks to return per category (default 50)
+
+    Returns:
+        dict with build info and chunks organized by category
+    """
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+
+    job_name = c._get_gcs_job_name(dashboard, tab)
+    collection_name = sanitize_collection_name(job_name)
+
+    # Resolve build_id if not specified or "latest"
+    if build_id is None or build_id.lower() == "latest":
+        build_id = _get_latest_build_id(job_name)
+        if not build_id:
+            return {"error": f"No builds found for job {job_name}"}
+        logger.info(f"Using latest build: {build_id}")
+
+    logger.info(f"Getting indexed logs for build {build_id} from {job_name}")
+
+    # Get chunks (no embeddings needed)
+    chunks_result = get_build_chunks(collection_name, build_id, include_embeddings=False)
+    if not chunks_result.get("success"):
+        return {"error": f"Failed to get chunks: {chunks_result.get('error')}"}
+
+    all_chunks = chunks_result.get("chunks", [])
+    if not all_chunks:
+        return {"error": f"No indexed chunks found for build {build_id} in {job_name}. Make sure the build has been downloaded and indexed."}
+
+    # Categorize and filter chunks
+    categorized = _categorize_chunks(all_chunks, filter_type, max_chunks)
+
+    return {
+        "tab": tab,
+        "build_id": build_id,
+        "job": job_name,
+        "total_indexed_chunks": len(all_chunks),
+        "filter_type": filter_type,
+        "chunks": categorized
+    }
+
+
+async def compare_indexed_builds(
+    tab_a: str,
+    build_id_a: str = None,
+    tab_b: str = None,
+    build_id_b: str = None,
+    dashboard: str = None,
+    filter_type: str = "interesting",
+    max_chunks_per_build: int = 100
+) -> dict:
+    """
+    Get indexed/chunked log data from two builds for comparison.
+
+    This function retrieves and organizes chunks from both builds,
+    filtering for interesting content (errors, failures, versions).
+    The actual semantic comparison should be done by Claude LLM.
+
+    Args:
+        tab_a: TestGrid tab name for build A
+        build_id_a: Build ID for build A (if None or "latest", uses most recent)
+        tab_b: TestGrid tab name for build B (defaults to tab_a for same-job comparison)
+        build_id_b: Build ID for build B (if None or "latest", uses most recent)
+        dashboard: Dashboard name (uses default if not specified)
+        filter_type: "all", "interesting", "errors", "failures"
+        max_chunks_per_build: Max chunks to return per category per build (default 30)
+
+    Returns:
+        dict with indexed chunks from both builds organized for comparison
+    """
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+
+    # Default tab_b to tab_a for same-job comparison
+    if tab_b is None:
+        tab_b = tab_a
+
+    # Get job names
+    job_a = c._get_gcs_job_name(dashboard, tab_a)
+    job_b = c._get_gcs_job_name(dashboard, tab_b)
+
+    collection_a = sanitize_collection_name(job_a)
+    collection_b = sanitize_collection_name(job_b)
+
+    # Resolve build IDs if not specified or "latest"
+    if build_id_a is None or build_id_a.lower() == "latest":
+        build_id_a = _get_latest_build_id(job_a)
+        if not build_id_a:
+            return {"error": f"No builds found for job {job_a}"}
+        logger.info(f"Using latest build for A: {build_id_a}")
+
+    if build_id_b is None or build_id_b.lower() == "latest":
+        build_id_b = _get_latest_build_id(job_b)
+        if not build_id_b:
+            return {"error": f"No builds found for job {job_b}"}
+        logger.info(f"Using latest build for B: {build_id_b}")
+
+    logger.info(f"Comparing indexed builds: {job_a}/{build_id_a} vs {job_b}/{build_id_b}")
+
+    # Get chunks for both builds
+    chunks_a_result = get_build_chunks(collection_a, build_id_a, include_embeddings=False)
+    if not chunks_a_result.get("success"):
+        return {"error": f"Failed to get chunks for build A: {chunks_a_result.get('error')}"}
+
+    chunks_b_result = get_build_chunks(collection_b, build_id_b, include_embeddings=False)
+    if not chunks_b_result.get("success"):
+        return {"error": f"Failed to get chunks for build B: {chunks_b_result.get('error')}"}
+
+    chunks_a = chunks_a_result.get("chunks", [])
+    chunks_b = chunks_b_result.get("chunks", [])
+
+    if not chunks_a:
+        return {"error": f"No indexed chunks found for build {build_id_a} in {job_a}. Make sure the build has been downloaded and indexed."}
+    if not chunks_b:
+        return {"error": f"No indexed chunks found for build {build_id_b} in {job_b}. Make sure the build has been downloaded and indexed."}
+
+    # Categorize chunks
+    categorized_a = _categorize_chunks(chunks_a, filter_type, max_chunks_per_build)
+    categorized_b = _categorize_chunks(chunks_b, filter_type, max_chunks_per_build)
+
+    return {
+        "build_a": {
+            "tab": tab_a,
+            "build_id": build_id_a,
+            "job": job_a,
+            "total_indexed_chunks": len(chunks_a),
+            "chunks": categorized_a
+        },
+        "build_b": {
+            "tab": tab_b,
+            "build_id": build_id_b,
+            "job": job_b,
+            "total_indexed_chunks": len(chunks_b),
+            "chunks": categorized_b
+        },
+        "filter_type": filter_type,
+        "instructions": "Compare the chunks from build_a and build_b. Identify: 1) New errors/failures in build_b that weren't in build_a, 2) Issues fixed in build_b that were in build_a, 3) Version/image changes, 4) Timing differences or timeouts"
+    }
+
+
+def _get_cached_builds_with_status(job_name: str, max_builds: int = 10) -> list:
+    """
+    Get cached builds with their status from finished.json.
+
+    Args:
+        job_name: The GCS job name
+        max_builds: Maximum number of builds to return
+
+    Returns:
+        List of dicts with build_id, timestamp, and passed status, sorted by timestamp (newest first)
+    """
+    config = get_config()
+    job_path = os.path.join(config["projects_root"], job_name)
+
+    if not os.path.exists(job_path):
+        return []
+
+    builds = []
+    for item in os.listdir(job_path):
+        item_path = os.path.join(job_path, item)
+        if os.path.isdir(item_path) and item.isdigit():
+            build_info = {"build_id": item, "timestamp": 0, "passed": None}
+
+            # Read timestamp from started.json
+            started_file = os.path.join(item_path, "started.json")
+            if os.path.exists(started_file):
+                try:
+                    with open(started_file, 'r') as f:
+                        started_data = json.load(f)
+                        build_info["timestamp"] = started_data.get("timestamp", 0)
+                except (json.JSONDecodeError, IOError):
+                    pass
+
+            # Read status from finished.json
+            finished_file = os.path.join(item_path, "finished.json")
+            if os.path.exists(finished_file):
+                try:
+                    with open(finished_file, 'r') as f:
+                        finished_data = json.load(f)
+                        build_info["passed"] = finished_data.get("passed", None)
+                except (json.JSONDecodeError, IOError):
+                    pass
+
+            builds.append(build_info)
+
+    # Sort by timestamp (newest first) and limit
+    builds.sort(key=lambda x: x["timestamp"], reverse=True)
+    return builds[:max_builds]
+
+
+def _find_regression_builds(
+    tab: str,
+    dashboard: str = None,
+    max_builds: int = 10
+) -> dict:
+    """
+    Find the last successful build and first failed build from cached builds.
+
+    Only checks builds that are already downloaded - does NOT download new builds.
+    Returns early if the most recent cached build is passing (no regression).
+    Errors out if the latest finished build from TestGrid has not been downloaded.
+
+    Args:
+        tab: TestGrid tab name
+        dashboard: Dashboard name (optional)
+        max_builds: Maximum number of cached builds to check (default: 10)
+
+    Returns:
+        dict with regression_found, last_pass, first_fail, builds_checked, and reason
+    """
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+    job_name = c._get_gcs_job_name(dashboard, tab)
+
+    # Get cached builds with status
+    builds = _get_cached_builds_with_status(job_name, max_builds)
+
+    if not builds:
+        return {
+            "error": True,
+            "regression_found": False,
+            "reason": "No cached builds found. Use download_test to cache builds first.",
+            "builds_checked": 0,
+            "job_name": job_name
+        }
+
+    # Check if the latest finished build from TestGrid has been downloaded
+    try:
+        remote_builds = c.list_builds(tab, dashboard=dashboard, limit=1)
+        if remote_builds:
+            latest_remote_build_id = remote_builds[0]["build_id"]
+            cached_build_ids = {b["build_id"] for b in builds}
+            if latest_remote_build_id not in cached_build_ids:
+                return {
+                    "error": True,
+                    "regression_found": False,
+                    "reason": f"Latest build {latest_remote_build_id} has not been downloaded. Run download_test first.",
+                    "latest_remote_build": latest_remote_build_id,
+                    "cached_builds": list(cached_build_ids)[:5],
+                    "suggestion": f"k8s-test-analyzer download --tab {tab}",
+                    "job_name": job_name
+                }
+    except Exception as e:
+        logger.warning(f"Could not check latest remote build: {e}")
+
+    # Early exit if most recent build is passing
+    most_recent = builds[0]
+    if most_recent.get("passed") is True:
+        return {
+            "regression_found": False,
+            "reason": "Most recent cached build is passing",
+            "most_recent_build": {
+                "build_id": most_recent["build_id"],
+                "timestamp": most_recent["timestamp"],
+                "status": "passed"
+            },
+            "builds_checked": 1,
+            "job_name": job_name
+        }
+
+    # Find the pass→fail transition (scan from newest to oldest)
+    first_fail = None
+    last_pass = None
+
+    for build in builds:
+        passed = build.get("passed")
+
+        if passed is False:
+            # This is a failed build - potential first_fail
+            first_fail = build
+        elif passed is True and first_fail is not None:
+            # Found a pass after seeing a fail - this is the transition point
+            last_pass = build
+            break
+
+    if first_fail is None:
+        # All builds are passing (shouldn't happen given early exit above)
+        return {
+            "regression_found": False,
+            "reason": "All cached builds are passing",
+            "builds_checked": len(builds),
+            "job_name": job_name
+        }
+
+    if last_pass is None:
+        # All cached builds are failing - regression happened before cached range
+        return {
+            "regression_found": False,
+            "reason": "All cached builds are failing - regression happened before cached range",
+            "builds_checked": len(builds),
+            "oldest_cached_build": builds[-1]["build_id"] if builds else None,
+            "suggestion": f"Download older builds with: k8s-test-analyzer download --tab {tab} --build <older-build-id>",
+            "job_name": job_name
+        }
+
+    return {
+        "regression_found": True,
+        "last_pass": {
+            "build_id": last_pass["build_id"],
+            "timestamp": last_pass["timestamp"],
+            "status": "passed"
+        },
+        "first_fail": {
+            "build_id": first_fail["build_id"],
+            "timestamp": first_fail["timestamp"],
+            "status": "failed"
+        },
+        "builds_checked": len(builds),
+        "job_name": job_name
+    }
+
+
+async def find_regression(
+    tab: str,
+    dashboard: str = None,
+    max_builds: int = 10,
+    filter_type: str = "interesting",
+    max_chunks_per_build: int = 100
+) -> dict:
+    """
+    Find and compare the last successful build with the first failed build.
+
+    Only checks CACHED builds (already downloaded). Returns early if most recent
+    build is passing (no regression to find).
+
+    This function:
+    1. Scans cached builds to find the pass→fail transition
+    2. Returns early if most recent build is passing (no regression)
+    3. Ensures both builds are indexed (calls index_project if needed)
+    4. Compares them using compare_indexed_builds()
+
+    Args:
+        tab: TestGrid tab name
+        dashboard: Dashboard name (optional)
+        max_builds: Maximum number of cached builds to check (default: 10)
+        filter_type: "all", "interesting", "errors", "failures"
+        max_chunks_per_build: Max chunks to return per category per build
+
+    Returns:
+        dict with regression context and comparison results
+    """
+    from local_indexing import _get_completed_builds
+
+    # Find the regression point
+    regression_info = _find_regression_builds(tab, dashboard, max_builds)
+
+    if not regression_info.get("regression_found"):
+        return regression_info
+
+    # We found a regression - get build IDs
+    last_pass_id = regression_info["last_pass"]["build_id"]
+    first_fail_id = regression_info["first_fail"]["build_id"]
+    job_name = regression_info["job_name"]
+    collection_name = sanitize_collection_name(job_name)
+
+    # Check if builds are indexed
+    completed_builds = _get_completed_builds(collection_name)
+    last_pass_indexed = last_pass_id in completed_builds
+    first_fail_indexed = first_fail_id in completed_builds
+
+    # Index if needed (incremental - only indexes unindexed builds)
+    if not last_pass_indexed or not first_fail_indexed:
+        logger.info(f"Indexing builds for regression comparison (pass indexed: {last_pass_indexed}, fail indexed: {first_fail_indexed})")
+        await index_project(job_name, force=False)
+
+    # Now compare the builds
+    comparison = await compare_indexed_builds(
+        tab_a=tab,
+        build_id_a=last_pass_id,
+        tab_b=tab,
+        build_id_b=first_fail_id,
+        dashboard=dashboard,
+        filter_type=filter_type,
+        max_chunks_per_build=max_chunks_per_build
+    )
+
+    if "error" in comparison:
+        return {
+            "regression_found": True,
+            "last_pass": regression_info["last_pass"],
+            "first_fail": regression_info["first_fail"],
+            "builds_checked": regression_info["builds_checked"],
+            "comparison_error": comparison["error"]
+        }
+
+    return {
+        "regression_found": True,
+        "last_pass": regression_info["last_pass"],
+        "first_fail": regression_info["first_fail"],
+        "builds_checked": regression_info["builds_checked"],
+        "comparison": comparison
+    }
+
+
+def _categorize_chunks(chunks: list, filter_type: str, max_per_category: int) -> dict:
+    """
+    Categorize chunks by content type.
+
+    Args:
+        chunks: List of chunk dicts with 'text' and 'metadata'
+        filter_type: "all", "interesting", "errors", "failures"
+        max_per_category: Maximum chunks per category
+
+    Returns:
+        dict with categorized chunks and counts
+    """
+    # Patterns for categorization
+    error_pattern = re.compile(r'(error|exception|panic|fatal|traceback|stderr)', re.IGNORECASE)
+    failure_pattern = re.compile(r'(fail|failed|failure|\bFAIL\b|FAILED)', re.IGNORECASE)
+    version_pattern = re.compile(r'(v\d+\.\d+|version[:\s]+\d|kubernetes[:\s]+v?\d+\.\d+|image[:\s])', re.IGNORECASE)
+    timing_pattern = re.compile(r'(timeout|timed out|duration|elapsed|took \d+|seconds|minutes)', re.IGNORECASE)
+
+    categories = {
+        "errors": [],
+        "failures": [],
+        "versions": [],
+        "timing": [],
+        "other": []
+    }
+
+    for chunk in chunks:
+        text = chunk.get("text", "")
+        metadata = chunk.get("metadata", {})
+
+        chunk_summary = {
+            "file": metadata.get("file_path", "unknown"),
+            "lines": f"{metadata.get('start_line', '?')}-{metadata.get('end_line', '?')}",
+            "text": text[:1000] if len(text) > 1000 else text  # Truncate for readability
+        }
+
+        # Categorize based on content
+        if error_pattern.search(text):
+            categories["errors"].append(chunk_summary)
+        elif failure_pattern.search(text):
+            categories["failures"].append(chunk_summary)
+        elif version_pattern.search(text):
+            categories["versions"].append(chunk_summary)
+        elif timing_pattern.search(text):
+            categories["timing"].append(chunk_summary)
+        else:
+            categories["other"].append(chunk_summary)
+
+    # Apply filter
+    if filter_type == "all":
+        pass  # Return all categories
+    elif filter_type == "interesting":
+        # Remove "other" category for interesting filter
+        categories["other"] = []
+    elif filter_type == "errors":
+        categories = {"errors": categories.get("errors", []), "failures": [], "versions": [], "timing": [], "other": []}
+    elif filter_type == "failures":
+        categories = {"errors": [], "failures": categories.get("failures", []), "versions": [], "timing": [], "other": []}
+
+    # Limit chunks per category and add counts
+    result = {}
+    for cat, items in categories.items():
+        result[cat] = items[:max_per_category]
+        result[f"{cat}_count"] = len(items)
+
+    return result
