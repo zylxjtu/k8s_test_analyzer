@@ -17,6 +17,8 @@ from local_indexing import (
     get_chroma_client,
     get_embedding_function,
     get_config,
+    delete_build_from_index,
+    sanitize_collection_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -442,3 +444,175 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
         },
         'tabs': results
     }
+
+
+import shutil
+
+
+async def cleanup_old_builds(keep_builds: int = 10, dry_run: bool = False) -> dict:
+    """
+    Clean up old builds, keeping only the most recent N builds per job.
+    Removes both the build folders and their corresponding ChromaDB index entries.
+
+    Args:
+        keep_builds: Number of most recent builds to keep per job (default: 10)
+        dry_run: If True, only report what would be deleted without actually deleting
+
+    Returns:
+        dict with cleanup results
+    """
+    config = get_config()
+    projects_root = config["projects_root"]
+
+    if not os.path.exists(projects_root):
+        return {"error": f"Projects root does not exist: {projects_root}"}
+
+    # Get all job folders (excluding chroma_db and other system folders)
+    ignore_dirs = set(config.get("ignore_dirs", []))
+    ignore_dirs.add("chroma_db")
+    ignore_dirs.add("container_cache")
+
+    job_folders = []
+    for item in os.listdir(projects_root):
+        item_path = os.path.join(projects_root, item)
+        if os.path.isdir(item_path) and item not in ignore_dirs and not item.startswith('.'):
+            job_folders.append(item)
+
+    if not job_folders:
+        return {"message": "No job folders found", "jobs_processed": 0}
+
+    results = {
+        "jobs_processed": 0,
+        "total_builds_deleted": 0,
+        "total_chunks_deleted": 0,
+        "total_space_freed_mb": 0,
+        "dry_run": dry_run,
+        "details": []
+    }
+
+    for job_name in job_folders:
+        job_path = os.path.join(projects_root, job_name)
+        job_result = await _cleanup_job_builds(job_name, job_path, keep_builds, dry_run)
+        results["details"].append(job_result)
+        results["jobs_processed"] += 1
+        results["total_builds_deleted"] += job_result.get("builds_deleted", 0)
+        results["total_chunks_deleted"] += job_result.get("chunks_deleted", 0)
+        results["total_space_freed_mb"] += job_result.get("space_freed_mb", 0)
+
+    logger.info(
+        f"Cleanup complete: {results['total_builds_deleted']} builds deleted, "
+        f"{results['total_chunks_deleted']} chunks removed, "
+        f"{results['total_space_freed_mb']:.2f} MB freed"
+    )
+
+    return results
+
+
+async def _cleanup_job_builds(job_name: str, job_path: str, keep_builds: int, dry_run: bool) -> dict:
+    """
+    Clean up old builds for a single job.
+
+    Args:
+        job_name: Name of the job (collection name)
+        job_path: Path to the job folder
+        keep_builds: Number of builds to keep
+        dry_run: If True, only report without deleting
+
+    Returns:
+        dict with cleanup results for this job
+    """
+    result = {
+        "job": job_name,
+        "builds_deleted": 0,
+        "chunks_deleted": 0,
+        "space_freed_mb": 0,
+        "builds_kept": [],
+        "builds_removed": []
+    }
+
+    try:
+        # List all build folders (they are numeric build IDs)
+        build_folders = []
+        for item in os.listdir(job_path):
+            item_path = os.path.join(job_path, item)
+            if os.path.isdir(item_path) and item.isdigit():
+                build_folders.append(item)
+
+        if not build_folders:
+            result["message"] = "No build folders found"
+            return result
+
+        # Sort by build ID (numeric, descending - newest first)
+        build_folders.sort(key=lambda x: int(x), reverse=True)
+
+        # Split into keeps and deletes
+        builds_to_keep = build_folders[:keep_builds]
+        builds_to_delete = build_folders[keep_builds:]
+
+        result["builds_kept"] = builds_to_keep
+
+        if not builds_to_delete:
+            result["message"] = f"Only {len(build_folders)} builds found, nothing to delete"
+            return result
+
+        collection_name = sanitize_collection_name(job_name)
+
+        for build_id in builds_to_delete:
+            build_path = os.path.join(job_path, build_id)
+
+            # Calculate folder size before deletion
+            folder_size_mb = _get_folder_size_mb(build_path)
+
+            if dry_run:
+                result["builds_removed"].append({
+                    "build_id": build_id,
+                    "size_mb": folder_size_mb,
+                    "status": "would_delete"
+                })
+                result["builds_deleted"] += 1
+                result["space_freed_mb"] += folder_size_mb
+            else:
+                # Delete from ChromaDB index first
+                index_result = delete_build_from_index(collection_name, build_id)
+                chunks_deleted = index_result.get("deleted_chunks", 0)
+
+                # Delete the folder
+                try:
+                    shutil.rmtree(build_path)
+                    result["builds_removed"].append({
+                        "build_id": build_id,
+                        "size_mb": folder_size_mb,
+                        "chunks_deleted": chunks_deleted,
+                        "status": "deleted"
+                    })
+                    result["builds_deleted"] += 1
+                    result["chunks_deleted"] += chunks_deleted
+                    result["space_freed_mb"] += folder_size_mb
+                    logger.info(f"Deleted build {build_id} from {job_name} ({folder_size_mb:.2f} MB, {chunks_deleted} chunks)")
+                except Exception as e:
+                    result["builds_removed"].append({
+                        "build_id": build_id,
+                        "status": "error",
+                        "error": str(e)
+                    })
+                    logger.error(f"Failed to delete build folder {build_path}: {e}")
+
+        return result
+
+    except Exception as e:
+        result["error"] = str(e)
+        logger.error(f"Error cleaning up job {job_name}: {e}")
+        return result
+
+
+def _get_folder_size_mb(folder_path: str) -> float:
+    """Calculate the total size of a folder in megabytes."""
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(folder_path):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            try:
+                total_size += os.path.getsize(filepath)
+            except (OSError, IOError):
+                pass
+    return total_size / (1024 * 1024)

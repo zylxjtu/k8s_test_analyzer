@@ -132,6 +132,7 @@ Key environment variables (can be set in `.env` file):
 | `PROJECTS_ROOT` | `~/.k8s_testlog_cache` | Root directory for cached test logs |
 | `FASTMCP_PORT` | `8978` | MCP server port |
 | `SCHEDULE_INTERVAL_SECONDS` | `3600` | Auto-sync interval (0 to disable) |
+| `CLEANUP_KEEP_BUILDS` | `10` | Builds to keep per job during cleanup (0 to disable) |
 
 ## MCP Tools Available
 
@@ -141,7 +142,7 @@ The MCP server exposes these tools (all mirror CLI commands):
 |----------|-------------|-------------|
 | `download_test` | `download` | Download and index test logs for a specific tab |
 | `download_all_latest` | `download-all` | Download and index all tabs from a dashboard |
-| `search_code` | `search` | Semantic search over indexed logs |
+| `search_log` | `search` | Semantic search over indexed logs |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | `list-tabs` | List available tabs in a dashboard |
 | `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
@@ -171,7 +172,7 @@ The MCP server exposes these tools (all mirror CLI commands):
 
 ### Debugging a Specific Test Failure
 1. Download the logs: `download_test(tab="capz-windows-1-33-serial-slow")`
-2. Search for error patterns: `search_code(query="timeout waiting for pod", tab="capz-windows-1-33-serial-slow")`
+2. Search for error patterns: `search_log(query="timeout waiting for pod", tab="capz-windows-1-33-serial-slow")`
 3. Review search results for relevant log sections
 
 ### Monitoring Dashboard Health
@@ -180,7 +181,7 @@ The MCP server exposes these tools (all mirror CLI commands):
 
 ### Investigating Flaky Tests
 1. Download multiple builds: Use `download_test()` with different `build_id` parameters
-2. Search for common patterns: `search_code(query="race condition OR intermittent")`
+2. Search for common patterns: `search_log(query="race condition OR intermittent")`
 
 ## Dependencies
 

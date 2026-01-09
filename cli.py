@@ -328,7 +328,7 @@ def cmd_download_all(args):
 
 
 def cmd_search(args):
-    """Search indexed logs (mirrors MCP search_code tool)."""
+    """Search indexed logs (mirrors MCP search_log tool)."""
     async def _search():
         from local_indexing import initialize_chromadb
         import core
@@ -429,15 +429,15 @@ def cmd_index_stats(args):
     async def _stats():
         from local_indexing import initialize_chromadb
         import core
-        
+
         await initialize_chromadb()
-        
+
         result = await core.get_index_stats()
-        
+
         if "error" in result:
             print(f"Error: {result['error']}", file=sys.stderr)
             return 1
-        
+
         if args.format == 'json':
             print(json.dumps(result, indent=2))
         else:
@@ -449,10 +449,58 @@ def cmd_index_stats(args):
                     print(f"  {c['name']}: ERROR - {c['error']}")
                 else:
                     print(f"  {c['name']}: {c['chunks']} chunks")
-        
+
         return 0
-    
+
     return _run_async(_stats())
+
+
+def cmd_cleanup(args):
+    """Clean up old builds (mirrors MCP cleanup_builds tool)."""
+    async def _cleanup():
+        from local_indexing import initialize_chromadb
+        import core
+
+        await initialize_chromadb()
+
+        action = "Would delete" if args.dry_run else "Deleting"
+        print(f"{action} old builds, keeping {args.keep} most recent per job...")
+        if args.dry_run:
+            print("(Dry run - no changes will be made)")
+        print()
+
+        result = await core.cleanup_old_builds(keep_builds=args.keep, dry_run=args.dry_run)
+
+        if "error" in result:
+            print(f"Error: {result['error']}", file=sys.stderr)
+            return 1
+
+        if args.format == 'json':
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"Jobs processed: {result.get('jobs_processed', 0)}")
+            print(f"Builds deleted: {result.get('total_builds_deleted', 0)}")
+            print(f"Index chunks removed: {result.get('total_chunks_deleted', 0)}")
+            print(f"Space freed: {result.get('total_space_freed_mb', 0):.2f} MB")
+
+            if args.verbose:
+                print()
+                for job in result.get("details", []):
+                    print(f"\n{job['job']}:")
+                    if job.get("message"):
+                        print(f"  {job['message']}")
+                    else:
+                        print(f"  Kept: {len(job.get('builds_kept', []))} builds")
+                        print(f"  Removed: {len(job.get('builds_removed', []))} builds")
+                        for removed in job.get("builds_removed", []):
+                            status = removed.get("status", "unknown")
+                            size = removed.get("size_mb", 0)
+                            chunks = removed.get("chunks_deleted", 0)
+                            print(f"    - {removed['build_id']}: {status} ({size:.2f} MB, {chunks} chunks)")
+
+        return 0
+
+    return _run_async(_cleanup())
 
 
 def main():
@@ -513,8 +561,8 @@ def main():
     p.add_argument('--force-reindex', action='store_true', help='Force reindex even if already indexed')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
     
-    # search (mirrors search_code)
-    p = sub.add_parser('search', help='Search indexed logs (MCP: search_code)')
+    # search (mirrors search_log)
+    p = sub.add_parser('search', help='Search indexed logs (MCP: search_log)')
     p.add_argument('query', help='Search query')
     p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
     p.add_argument('--dashboard', '-d', help='Dashboard name')
@@ -534,7 +582,14 @@ def main():
     # index-stats (mirrors get_index_stats)
     p = sub.add_parser('index-stats', help='Get index statistics (MCP: get_index_stats)')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
-    
+
+    # cleanup (mirrors cleanup_builds)
+    p = sub.add_parser('cleanup', help='Clean up old builds (MCP: cleanup_builds)')
+    p.add_argument('--keep', '-k', type=int, default=10, help='Number of builds to keep per job (default: 10)')
+    p.add_argument('--dry-run', action='store_true', help='Show what would be deleted without deleting')
+    p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
+    p.add_argument('-v', '--verbose', action='store_true', help='Show detailed output per job')
+
     args = parser.parse_args()
     
     if not args.command:
@@ -556,6 +611,7 @@ def main():
         'reindex': cmd_reindex,
         'reindex-all': cmd_reindex_all,
         'index-stats': cmd_index_stats,
+        'cleanup': cmd_cleanup,
     }
     return cmds[args.command](args)
 

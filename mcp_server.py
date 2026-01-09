@@ -31,8 +31,8 @@ mcp = FastMCP("k8s-test-analyzer")
 
 
 @mcp.tool(
-    name="search_code",
-    description="""Search indexed logs/code using natural language queries.
+    name="search_log",
+    description="""Search indexed logs using natural language queries.
         Args:
             query: Natural language query about the logs/codebase
             tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
@@ -41,7 +41,7 @@ mcp = FastMCP("k8s-test-analyzer")
             threshold: Minimum relevance percentage to include results (default: 30.0)
     """
 )
-async def search_code(
+async def search_log(
     query: str,
     tab: str,
     dashboard: str = None,
@@ -52,7 +52,7 @@ async def search_code(
         result = await core.search_logs(query, tab, dashboard, n_results, threshold)
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
-        logger.error(f"Error in search_code: {str(e)}")
+        logger.error(f"Error in search_log: {str(e)}")
         return json.dumps({"error": str(e), "results": [], "total_results": 0})
 
 
@@ -202,25 +202,41 @@ async def get_index_stats() -> str:
 # Default schedule interval in seconds (1 hour)
 SCHEDULE_INTERVAL_SECONDS = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "3600"))
 
+# Number of builds to keep per job during cleanup (default: 10)
+CLEANUP_KEEP_BUILDS = int(os.getenv("CLEANUP_KEEP_BUILDS", "10"))
+
 
 async def scheduled_download_and_reindex():
-    """Background task that periodically downloads all latest builds and reindexes."""
+    """Background task that periodically downloads all latest builds, reindexes, and cleans up old builds."""
     while True:
         try:
             # Wait for the configured interval
             logger.info(f"Scheduled task sleeping for {SCHEDULE_INTERVAL_SECONDS} seconds...")
             await asyncio.sleep(SCHEDULE_INTERVAL_SECONDS)
-            
+
             logger.info("Starting scheduled download and reindex...")
-            
-            # Reuse the core function
+
+            # Download and index new builds
             result = await core.download_all_and_index(skip_indexing=False)
-            
+
             tabs_count = len(result.get("tabs", {}))
             indexed_count = result.get("indexing_summary", {}).get("total_indexed", 0)
-            
-            logger.info(f"Scheduled task complete: downloaded {tabs_count} tabs, indexed {indexed_count} projects")
-            
+
+            logger.info(f"Download complete: {tabs_count} tabs, indexed {indexed_count} projects")
+
+            # Clean up old builds
+            if CLEANUP_KEEP_BUILDS > 0:
+                logger.info(f"Starting cleanup, keeping {CLEANUP_KEEP_BUILDS} builds per job...")
+                cleanup_result = await core.cleanup_old_builds(keep_builds=CLEANUP_KEEP_BUILDS)
+                builds_deleted = cleanup_result.get("total_builds_deleted", 0)
+                chunks_deleted = cleanup_result.get("total_chunks_deleted", 0)
+                space_freed = cleanup_result.get("total_space_freed_mb", 0)
+                logger.info(f"Cleanup complete: {builds_deleted} builds deleted, {chunks_deleted} chunks removed, {space_freed:.2f} MB freed")
+            else:
+                logger.info("Cleanup disabled (CLEANUP_KEEP_BUILDS=0)")
+
+            logger.info("Scheduled task complete")
+
         except Exception as e:
             logger.error(f"Error in scheduled task: {e}")
             # Continue running even after errors

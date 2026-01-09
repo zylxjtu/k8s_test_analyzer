@@ -635,3 +635,59 @@ def get_embedding_function():
 def get_config():
     """Get the current configuration."""
     return config
+
+
+def delete_build_from_index(collection_name: str, build_id: str) -> dict:
+    """
+    Delete all indexed chunks for a specific build from a ChromaDB collection.
+
+    Args:
+        collection_name: Name of the collection (job name)
+        build_id: Build ID whose chunks should be deleted
+
+    Returns:
+        dict with deletion results
+    """
+    try:
+        if chroma_client is None:
+            return {"success": False, "error": "ChromaDB client not initialized"}
+
+        # Get the collection
+        try:
+            collection = chroma_client.get_collection(
+                name=collection_name,
+                embedding_function=embedding_function
+            )
+        except Exception as e:
+            return {"success": False, "error": f"Collection not found: {collection_name}"}
+
+        # Get all documents in the collection to find ones matching this build
+        # ChromaDB doesn't support prefix queries on metadata, so we need to get all and filter
+        all_docs = collection.get(include=["metadatas"])
+
+        if not all_docs or not all_docs.get("ids"):
+            return {"success": True, "deleted_chunks": 0, "message": "No documents in collection"}
+
+        # Find IDs where file_path starts with the build_id
+        ids_to_delete = []
+        for doc_id, metadata in zip(all_docs["ids"], all_docs["metadatas"]):
+            file_path = metadata.get("file_path", "")
+            # file_path format: "build_id/filename" or "build_id/subdir/filename"
+            if file_path.startswith(f"{build_id}/") or file_path.startswith(f"{build_id}\\"):
+                ids_to_delete.append(doc_id)
+
+        if not ids_to_delete:
+            return {"success": True, "deleted_chunks": 0, "message": f"No chunks found for build {build_id}"}
+
+        # Delete the chunks in batches (ChromaDB has limits on batch size)
+        batch_size = 5000
+        for i in range(0, len(ids_to_delete), batch_size):
+            batch = ids_to_delete[i:i + batch_size]
+            collection.delete(ids=batch)
+
+        logger.info(f"Deleted {len(ids_to_delete)} chunks for build {build_id} from {collection_name}")
+        return {"success": True, "deleted_chunks": len(ids_to_delete)}
+
+    except Exception as e:
+        logger.error(f"Error deleting build {build_id} from index: {e}")
+        return {"success": False, "error": str(e)}

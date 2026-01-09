@@ -56,11 +56,35 @@ python --version  # Should show Python 3.11.x
 deactivate
 ```
 
-## Quick Start
+## CLI Commands
 
-### CLI Usage
+The CLI provides commands that mirror the MCP server tools, allowing you to test functionality without running the MCP server.
 
-The CLI provides commands that mirror the MCP server tools, allowing you to test functionality without running the MCP server:
+### Command Reference
+
+#### Indexing Commands (Mirror MCP Tools)
+
+| Command | Description | MCP Tool Equivalent |
+|---------|-------------|---------------------|
+| `download` | Download and index test logs | `download_test` |
+| `download-all` | Download and index all tabs | `download_all_latest` |
+| `search` | Semantic search over indexed logs | `search_log` |
+| `reindex` | Re-index a specific project | `reindex_folder` |
+| `reindex-all` | Re-index all cached folders | `reindex_all` |
+| `index-stats` | Get indexing statistics | `get_index_stats` |
+| `cleanup` | Clean up old builds, keeping N most recent | (scheduled task) |
+
+#### Data Retrieval Commands
+
+| Command | Description |
+|---------|-------------|
+| `fetch` | Fetch test data from a tab (without indexing) |
+| `list-tabs` | List available tabs for a dashboard |
+| `list-builds` | List recent builds for a job |
+| `summary` | Get dashboard summary (passing/failing/flaky tabs) |
+| `status` | Get test results for latest build of each tab |
+
+### Usage Examples
 
 ```bash
 # Download and index test logs from a specific tab
@@ -86,52 +110,13 @@ k8s-test-analyzer summary
 
 # Get test status for all tabs (fetches latest build for each)
 k8s-test-analyzer status
+
+# Clean up old builds (dry run to preview)
+k8s-test-analyzer cleanup --dry-run
+
+# Clean up old builds, keeping only 5 most recent per job
+k8s-test-analyzer cleanup --keep 5
 ```
-
-### Python API
-
-```python
-from k8s_testlog_downloader.data_collector import DataCollector
-
-# Initialize collector
-collector = DataCollector()
-
-# List tabs in default dashboard
-tabs = collector.list_tabs()
-print(tabs)
-
-# Fetch latest test data from a tab
-data = collector.collect_from_tab("capz-windows-1-33-serial-slow")
-print(f"Job: {data['job_name']}")
-print(f"Build: {data['build_id']}")
-print(f"Status: {data['build_info']['status']}")
-print(f"Failed tests: {data['test_results']['failed']}")
-```
-
-## CLI Commands
-
-The CLI provides two sets of commands:
-
-### Indexing Commands (Mirror MCP Tools)
-
-| Command | Description | MCP Tool Equivalent |
-|---------|-------------|---------------------|
-| `download` | Download and index test logs | `download_test` |
-| `download-all` | Download and index all tabs | `download_all_latest` |
-| `search` | Semantic search over indexed logs | `search_code` |
-| `reindex` | Re-index a specific project | `reindex_folder` |
-| `reindex-all` | Re-index all cached folders | `reindex_all` |
-| `index-stats` | Get indexing statistics | `get_index_stats` |
-
-### Data Retrieval Commands
-
-| Command | Description |
-|---------|-------------|
-| `fetch` | Fetch test data from a tab (without indexing) |
-| `list-tabs` | List available tabs for a dashboard |
-| `list-builds` | List recent builds for a job |
-| `summary` | Get dashboard summary (passing/failing/flaky tabs) |
-| `status` | Get test results for latest build of each tab |
 
 ## MCP Server
 
@@ -201,7 +186,7 @@ Then restart Claude Desktop.
 | `list_dashboard_tabs` | List tabs in a dashboard |
 | `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
 | `get_tab_status` | Get test results for latest build of tabs specified |
-| `search_code` | Semantic search over indexed code/logs |
+| `search_log` | Semantic search over indexed logs |
 | `reindex_folder` | Force re-index a specific project/folder |
 | `reindex_all` | Force re-index all cached project folders |
 | `get_index_stats` | Get indexing statistics (collections and document counts) |
@@ -229,6 +214,8 @@ docker compose logs -f
 | `DEFAULT_DASHBOARD` | `sig-windows-signal` | Default TestGrid dashboard |
 | `FOLDERS_TO_INDEX` | (auto-discover) | Comma-separated folders to index |
 | `ADDITIONAL_IGNORE_DIRS` | | Extra directories to ignore |
+| `SCHEDULE_INTERVAL_SECONDS` | `3600` | Scheduled task interval (0 to disable) |
+| `CLEANUP_KEEP_BUILDS` | `10` | Builds to keep per job during cleanup (0 to disable) |
 
 ## Configuration
 
