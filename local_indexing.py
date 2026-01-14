@@ -349,6 +349,9 @@ def process_and_index_documents(
     persist_directory: str
 ) -> None:
     """Process documents with CodeSplitter and index them in ChromaDB."""
+    import time
+    start_time = time.time()
+
     if not documents:
         logger.warning("No documents to process.")
         return
@@ -487,9 +490,10 @@ def process_and_index_documents(
                 f"{doc.metadata.get('file_path', 'unknown')}: {e}"
             )
 
+    elapsed_time = time.time() - start_time
     logger.info(
         f"Successfully indexed {total_nodes} code chunks "
-        f"across {len(documents)} files"
+        f"across {len(documents)} files in {elapsed_time:.2f}s"
     )
 
 
