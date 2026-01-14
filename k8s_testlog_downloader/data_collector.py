@@ -239,8 +239,9 @@ class DataCollector:
         return [{"build_id": b, "url": f"https://gcsweb.k8s.io/gcs/kubernetes-ci-logs/logs/{job_name}/{b}/"} 
                 for b in self.gcs.get_job_builds(job_name, limit)]
     
-    def get_testgrid_summary(self, dashboard: str, tab: Optional[str] = None) -> dict:
+    def get_testgrid_summary(self, dashboard: Optional[str] = None, tab: Optional[str] = None) -> dict:
         """Get TestGrid summary."""
+        dashboard = dashboard or get_default_dashboard()
         if tab:
             return {"dashboard": dashboard, "tab": tab}
         return self.testgrid.get_dashboard_summary(dashboard)

@@ -904,9 +904,19 @@ async def compare_indexed_builds(
     chunks_b = chunks_b_result.get("chunks", [])
 
     if not chunks_a:
-        return {"error": f"No indexed chunks found for build {build_id_a} in {job_a}. Make sure the build has been downloaded and indexed."}
+        return {
+            "error": f"No indexed chunks found for build {build_id_a} in {job_a}. "
+                     f"Make sure the build has been downloaded and indexed. "
+                     f"Indexing may take a few minutes depending on the build size - please be patient and try again later. "
+                     f"You can check indexing status with: get_index_status(tab=\"{tab_a}\", build_id=\"{build_id_a}\")"
+        }
     if not chunks_b:
-        return {"error": f"No indexed chunks found for build {build_id_b} in {job_b}. Make sure the build has been downloaded and indexed."}
+        return {
+            "error": f"No indexed chunks found for build {build_id_b} in {job_b}. "
+                     f"Make sure the build has been downloaded and indexed. "
+                     f"Indexing may take a few minutes depending on the build size - please be patient and try again later. "
+                     f"You can check indexing status with: get_index_status(tab=\"{tab_b}\", build_id=\"{build_id_b}\")"
+        }
 
     # Categorize chunks
     categorized_a = _categorize_chunks(chunks_a, filter_type, max_chunks_per_build)
@@ -1120,7 +1130,7 @@ async def find_regression(
     This function:
     1. Scans cached builds to find the pass→fail transition
     2. Returns early if most recent build is passing (no regression)
-    3. Ensures both builds are indexed (calls index_project if needed)
+    3. Checks that both builds are indexed (returns error if not)
     4. Compares them using compare_indexed_builds()
 
     Args:
@@ -1147,15 +1157,29 @@ async def find_regression(
     job_name = regression_info["job_name"]
     collection_name = sanitize_collection_name(job_name)
 
-    # Check if builds are indexed
+    # Check if builds are indexed - return error if not (consistent with compare_build_logs)
     completed_builds = _get_completed_builds(collection_name)
     last_pass_indexed = last_pass_id in completed_builds
     first_fail_indexed = first_fail_id in completed_builds
 
-    # Index if needed (incremental - only indexes unindexed builds)
     if not last_pass_indexed or not first_fail_indexed:
-        logger.info(f"Indexing builds for regression comparison (pass indexed: {last_pass_indexed}, fail indexed: {first_fail_indexed})")
-        await index_project(job_name, force=False)
+        not_indexed = []
+        if not last_pass_indexed:
+            not_indexed.append(f"last_pass ({last_pass_id})")
+        if not first_fail_indexed:
+            not_indexed.append(f"first_fail ({first_fail_id})")
+
+        return {
+            "regression_found": True,
+            "last_pass": regression_info["last_pass"],
+            "first_fail": regression_info["first_fail"],
+            "builds_checked": regression_info["builds_checked"],
+            "error": "builds_not_indexed",
+            "reason": f"The following builds are not indexed: {', '.join(not_indexed)}. "
+                      f"Indexing may take a few minutes depending on the build size. "
+                      f"Please wait for indexing to complete and try again. "
+                      f"You can check indexing status with: get_index_status(tab=\"{tab}\")"
+        }
 
     # Now compare the builds
     comparison = await compare_indexed_builds(

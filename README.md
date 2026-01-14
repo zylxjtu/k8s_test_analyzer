@@ -7,158 +7,24 @@ A Python tool for downloading, indexing, and analyzing Kubernetes test logs from
 - 📥 Download test logs from TestGrid and GCS (Google Cloud Storage)
 - 📊 Parse JUnit XML test results
 - 🔍 Semantic search over logs using ChromaDB and LlamaIndex
-- 🤖 MCP integration for Claude Desktop and Claude Code
+- 🤖 MCP integration for Claude Desktop and Claude Code and vscode
 - 🖥️ CLI that mirrors MCP tools for testing and standalone use
 - 🐳 Docker support for easy deployment
 
-## Installation
-
-### Using a Virtual Environment (Recommended)
-
-```bash
-# Create and activate a Python 3.11+ virtual environment
-python3.11 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Upgrade pip and setuptools
-pip install --upgrade pip setuptools
-
-# Install the package in editable mode
-pip install -e .
-
-# Install dependencies for the MCP server and indexing
-pip install -r requirements.txt
-```
-
-### Dependency Management
-
-The `requirements.txt` file contains pinned versions of direct dependencies:
-- ✅ **Exact versions** for reproducible builds
-- ✅ **Direct dependencies only** (pip resolves transitive dependencies automatically)
-- ✅ **Readable and maintainable** organization by category
-- ✅ **Docker-friendly** (avoids system packages)
-
-To regenerate with all transitive dependencies pinned:
-```bash
-pip freeze > requirements.txt
-```
-
-### Managing the Virtual Environment
-
-```bash
-# Activate the virtual environment
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Verify you're using the correct Python
-python --version  # Should show Python 3.11.x
-
-# Deactivate when done
-deactivate
-```
-
-## CLI Commands
-
-The CLI provides commands that mirror the MCP server tools, allowing you to test functionality without running the MCP server.
-
-### Command Reference
-
-#### Indexing Commands (Mirror MCP Tools)
-
-| Command | Description | MCP Tool Equivalent |
-|---------|-------------|---------------------|
-| `download` | Download and index test logs | `download_test` |
-| `download-all` | Download and index all tabs | `download_all_latest` |
-| `search` | Semantic search over indexed logs | `search_log` |
-| `compare` | Compare logs between two builds | `compare_build_logs` |
-| `find-regression` | Find and compare last pass with first fail | `find_regression` |
-| `reindex` | Re-index a specific project | `reindex_folder` |
-| `reindex-all` | Re-index all cached folders | `reindex_all` |
-| `index-stats` | Get indexing status for builds | `get_index_status` |
-| `cleanup` | Clean up old builds, keeping N most recent | (scheduled task) |
-
-#### Data Retrieval Commands
-
-| Command | Description |
-|---------|-------------|
-| `fetch` | Fetch test data from a tab (without indexing) |
-| `list-tabs` | List available tabs for a dashboard |
-| `list-builds` | List recent builds for a job |
-| `summary` | Get dashboard summary (passing/failing/flaky tabs) |
-| `status` | Get test results for latest build of each tab |
-
-### Usage Examples
-
-```bash
-# Download and index test logs from a specific tab (latest build)
-k8s-test-analyzer download --tab capz-windows-1-33-serial-slow
-
-# Download and index a specific build
-k8s-test-analyzer download --tab capz-windows-1-33-serial-slow --build 1234567890123
-
-# Download and index all tabs from a dashboard
-k8s-test-analyzer download-all
-
-# Search indexed logs (requires specifying which tab's logs to search)
-k8s-test-analyzer search "timeout error" --tab capz-windows-1-33-serial-slow
-
-# Check index status of latest build for a specific tab
-k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow
-
-# Check index status of a specific build
-k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow --build 2009123456789
-
-# Check index status for latest build of all tabs (default)
-k8s-test-analyzer index-stats
-
-# List available tabs for a dashboard
-k8s-test-analyzer list-tabs
-
-# List recent builds for a tab
-k8s-test-analyzer list-builds --tab capz-windows-1-33-serial-slow
-
-# Get dashboard summary (shows passing/failing tabs)
-k8s-test-analyzer summary
-
-# Get test status for all tabs (fetches latest build for each)
-k8s-test-analyzer status
-
-# Clean up old builds (dry run to preview)
-k8s-test-analyzer cleanup --dry-run
-
-# Clean up old builds, keeping only 5 most recent per job
-k8s-test-analyzer cleanup --keep 5
-
-# Compare logs between two builds of the same job
-k8s-test-analyzer compare --tab capz-windows-1-33-serial-slow --build-a 123456 --build-b 789012
-
-# Compare latest builds between two different jobs
-k8s-test-analyzer compare --tab-a capz-windows-1-33-serial-slow --tab-b capz-windows-1-34-serial-slow
-
-# Find regression point (last pass vs first fail) from cached builds
-k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow
-
-# Find regression with more builds and custom filter
-k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow --max-builds 20 --filter errors
-
-# Re-index a specific project (required after schema changes)
-k8s-test-analyzer reindex ci-kubernetes-e2e-capz-1-33-windows-serial-slow
-
-# Re-index all cached projects
-k8s-test-analyzer reindex-all
-```
-
-## MCP Server
+## Quick Start (MCP Server)
 
 ### Running the MCP Server
 
 The MCP server provides AI assistants with tools to analyze Kubernetes test logs:
 
 ```bash
-# Run directly
-python mcp_server.py
+# Run with Docker (recommended)
+./generate-env.sh
+docker compose build
+UID=$(id -u) GID=$(id -g) docker compose up -d
 
-# Or with Docker
-cd docker && docker-compose up -d
+# Or run directly (requires Python setup - see Development section)
+python mcp_server.py
 ```
 
 Connect via SSE: `http://localhost:8978/sse`
@@ -231,8 +97,6 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 
 ### MCP Tools Available
 
-All tools use the dashboard configured via the `DEFAULT_DASHBOARD` environment variable.
-
 | Tool | Description |
 |------|-------------|
 | `download_test` | Download test logs from TestGrid/GCS and index for semantic search |
@@ -248,20 +112,6 @@ All tools use the dashboard configured via the `DEFAULT_DASHBOARD` environment v
 | `reindex_all` | Force re-index all cached project folders |
 | `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
 
-## Docker Deployment
-
-```bash
-# Generate .env file from template (expands ${HOME} and other variables)
-./generate-env.sh
-
-# Build and run
-docker compose build
-docker compose up -d
-
-# View logs
-docker compose logs -f
-```
-
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -274,9 +124,165 @@ docker compose logs -f
 | `SCHEDULE_INTERVAL_SECONDS` | `3600` | Scheduled task interval (0 to disable) |
 | `CLEANUP_KEEP_BUILDS` | `10` | Builds to keep per job during cleanup (0 to disable) |
 
-## Configuration
+---
 
-### Environment Setup
+## Development
+
+This section covers installation, CLI usage, configuration, and architecture for developers.
+
+### Installation
+
+#### Using a Virtual Environment (Recommended)
+
+```bash
+# Create and activate a Python 3.11+ virtual environment
+python3.11 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Upgrade pip and setuptools
+pip install --upgrade pip setuptools
+
+# Install the package in editable mode
+pip install -e .
+
+# Install dependencies for the MCP server and indexing
+pip install -r requirements.txt
+```
+
+#### Dependency Management
+
+The `requirements.txt` file contains pinned versions of direct dependencies:
+- ✅ **Exact versions** for reproducible builds
+- ✅ **Direct dependencies only** (pip resolves transitive dependencies automatically)
+- ✅ **Readable and maintainable** organization by category
+- ✅ **Docker-friendly** (avoids system packages)
+
+To regenerate with all transitive dependencies pinned:
+```bash
+pip freeze > requirements.txt
+```
+
+#### Managing the Virtual Environment
+
+```bash
+# Activate the virtual environment
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Verify you're using the correct Python
+python --version  # Should show Python 3.11.x
+
+# Deactivate when done
+deactivate
+```
+
+### CLI Commands
+
+The CLI provides commands that mirror the MCP server tools, allowing you to test functionality without running the MCP server.
+
+#### Command Reference
+
+##### Indexing Commands (Mirror MCP Tools)
+
+| Command | Description | MCP Tool Equivalent |
+|---------|-------------|---------------------|
+| `download` | Download and index test logs | `download_test` |
+| `download-all` | Download and index all tabs | `download_all_latest` |
+| `search` | Semantic search over indexed logs | `search_log` |
+| `compare` | Compare logs between two builds | `compare_build_logs` |
+| `find-regression` | Find and compare last pass with first fail | `find_regression` |
+| `reindex` | Re-index a specific project | `reindex_folder` |
+| `reindex-all` | Re-index all cached folders | `reindex_all` |
+| `index-stats` | Get indexing status for builds | `get_index_status` |
+| `cleanup` | Clean up old builds, keeping N most recent | (scheduled task) |
+
+##### Data Retrieval Commands
+
+| Command | Description |
+|---------|-------------|
+| `fetch` | Fetch test data from a tab (without indexing) |
+| `list-tabs` | List available tabs for a dashboard |
+| `list-builds` | List recent builds for a job |
+| `summary` | Get dashboard summary (passing/failing/flaky tabs) |
+| `status` | Get test results for latest build of each tab |
+
+#### Usage Examples
+
+```bash
+# Download and index test logs from a specific tab (latest build)
+k8s-test-analyzer download --tab capz-windows-1-33-serial-slow
+
+# Download and index a specific build
+k8s-test-analyzer download --tab capz-windows-1-33-serial-slow --build 1234567890123
+
+# Download and index all tabs from a dashboard
+k8s-test-analyzer download-all
+
+# Search indexed logs (requires specifying which tab's logs to search)
+k8s-test-analyzer search "timeout error" --tab capz-windows-1-33-serial-slow
+
+# Check index status of latest build for a specific tab
+k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow
+
+# Check index status of a specific build
+k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow --build 2009123456789
+
+# Check index status for latest build of all tabs (default)
+k8s-test-analyzer index-stats
+
+# List available tabs for a dashboard
+k8s-test-analyzer list-tabs
+
+# List recent builds for a tab
+k8s-test-analyzer list-builds --tab capz-windows-1-33-serial-slow
+
+# Get dashboard summary (shows passing/failing tabs)
+k8s-test-analyzer summary
+
+# Get test status for all tabs (fetches latest build for each)
+k8s-test-analyzer status
+
+# Clean up old builds (dry run to preview)
+k8s-test-analyzer cleanup --dry-run
+
+# Clean up old builds, keeping only 5 most recent per job
+k8s-test-analyzer cleanup --keep 5
+
+# Compare logs between two builds of the same job
+k8s-test-analyzer compare --tab capz-windows-1-33-serial-slow --build-a 123456 --build-b 789012
+
+# Compare latest builds between two different jobs
+k8s-test-analyzer compare --tab-a capz-windows-1-33-serial-slow --tab-b capz-windows-1-34-serial-slow
+
+# Find regression point (last pass vs first fail) from cached builds
+k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow
+
+# Find regression with more builds and custom filter
+k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow --max-builds 20 --filter errors
+
+# Re-index a specific project (required after schema changes)
+k8s-test-analyzer reindex ci-kubernetes-e2e-capz-1-33-windows-serial-slow
+
+# Re-index all cached projects
+k8s-test-analyzer reindex-all
+```
+
+### Docker Deployment
+
+```bash
+# Generate .env file from template (expands ${HOME} and other variables)
+./generate-env.sh
+
+# Build and run
+docker compose build
+UID=$(id -u) GID=$(id -g) docker compose up -d
+
+# View logs
+docker compose logs -f
+```
+
+### Configuration
+
+#### Environment Setup
 
 The project uses `.env.template` with variable placeholders (e.g., `${HOME}`) that get expanded by `generate-env.sh`:
 
@@ -295,11 +301,11 @@ FASTMCP_PORT=8978
 
 **Note**: `.env.template` is tracked in git, but `.env` is gitignored (contains user-specific paths).
 
-### ChromaDB Storage
+#### ChromaDB Storage
 
 The ChromaDB database is stored at `${PROJECTS_ROOT}/chroma_db` (default: `~/.k8s-test-analyzer/cache/chroma_db`). This location is shared between the CLI and Docker container, ensuring both use the same indexed data.
 
-## Architecture
+### Architecture
 
 The project uses a modular architecture with shared business logic:
 
@@ -326,7 +332,7 @@ k8s-test-analyzer/
 └── README.md
 ```
 
-### Key Components
+#### Key Components
 
 - **core.py**: Contains all business logic for downloading, indexing, and searching. Both the CLI and MCP server call these functions.
 - **mcp_server.py**: Thin wrapper that exposes core.py functions as MCP tools via FastMCP.
