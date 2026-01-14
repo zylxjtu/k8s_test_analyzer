@@ -20,13 +20,18 @@ DEFAULT_CACHE_DIR = "~/.k8s-test-analyzer/cache"
 
 
 def load_config() -> dict:
-    """Load config from .env file (KEY=value format)."""
+    """Load config from environment variables and .env file.
+
+    Environment variables take precedence over .env file values.
+    This allows Docker containers to override settings via the environment.
+    """
     paths = [
         os.environ.get('K8S_TEST_ANALYZER_CONFIG'),
         Path.cwd() / '.env',
         Path(__file__).parent.parent / '.env',
     ]
     config = {}
+    # First, load from .env file
     for p in paths:
         if p and Path(p).exists():
             try:
@@ -38,6 +43,14 @@ def load_config() -> dict:
                 break
             except Exception:
                 pass
+
+    # Then, override with environment variables (higher priority)
+    for key in ['PROJECTS_ROOT', 'DEFAULT_DASHBOARD', 'FASTMCP_PORT',
+                'SCHEDULE_INTERVAL_SECONDS', 'CLEANUP_KEEP_BUILDS']:
+        env_value = os.environ.get(key)
+        if env_value is not None:
+            config[key] = env_value
+
     return config
 
 
@@ -118,12 +131,22 @@ class DataCollector:
         if match:
             major, minor = match.groups()
             return f"ci-kubernetes-e2e-capz-master-windows-{major}-{minor}"
-        
+
         # Handle tabs like "capz-windows-1-33-serial-slow" -> "ci-kubernetes-e2e-capz-1-33-windows-serial-slow"
         match = re.match(r'capz-windows-(\d+)-(\d+)-(.+)', tab)
         if match:
             return f"ci-kubernetes-e2e-capz-{match.group(1)}-{match.group(2)}-windows-{match.group(3)}"
-        
+
+        # Handle tabs like "capz-windows-master" or "capz-windows-master-suffix"
+        # -> "ci-kubernetes-e2e-capz-master-windows" or "ci-kubernetes-e2e-capz-master-windows-suffix"
+        match = re.match(r'capz-windows-(master|main)(?:-(.+))?$', tab)
+        if match:
+            branch = match.group(1)
+            suffix = match.group(2)
+            if suffix:
+                return f"ci-kubernetes-e2e-capz-{branch}-windows-{suffix}"
+            return f"ci-kubernetes-e2e-capz-{branch}-windows"
+
         return f"ci-kubernetes-e2e-{tab}"
     
     def _parse_build_info(self, downloaded: dict[str, Path]) -> dict:

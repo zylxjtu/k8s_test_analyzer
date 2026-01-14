@@ -89,8 +89,11 @@ The CLI provides commands that mirror the MCP server tools, allowing you to test
 ### Usage Examples
 
 ```bash
-# Download and index test logs from a specific tab
+# Download and index test logs from a specific tab (latest build)
 k8s-test-analyzer download --tab capz-windows-1-33-serial-slow
+
+# Download and index a specific build
+k8s-test-analyzer download --tab capz-windows-1-33-serial-slow --build 1234567890123
 
 # Download and index all tabs from a dashboard
 k8s-test-analyzer download-all
@@ -228,12 +231,14 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 
 ### MCP Tools Available
 
+All tools use the dashboard configured via the `DEFAULT_DASHBOARD` environment variable.
+
 | Tool | Description |
 |------|-------------|
 | `download_test` | Download test logs from TestGrid/GCS and index for semantic search |
-| `download_all_latest` | Download and index test data for all tabs in a dashboard |
+| `download_all_latest` | Download and index test data for all tabs in the configured dashboard |
 | `list_recent_builds` | List recent builds for a tab |
-| `list_dashboard_tabs` | List tabs in a dashboard |
+| `list_dashboard_tabs` | List tabs in the configured dashboard |
 | `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
 | `get_tab_status` | Get test results for latest build of tabs specified |
 | `search_log` | Semantic search over indexed logs |

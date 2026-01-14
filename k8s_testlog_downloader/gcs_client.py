@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
@@ -199,20 +200,31 @@ class GCSClient:
         url = f"{GCS_STORAGE_URL}{GCS_BUCKET}/{GCS_LOGS_PREFIX}/{job_name}/{build_id}/{file_path}"
         
         logger.info(f"Downloading {url}")
-        
+
         try:
             response = self.session.get(url, timeout=60, stream=True)
             response.raise_for_status()
-            
+
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(cache_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            logger.debug(f"Saved to {cache_path}")
-            return cache_path
-            
+
+            # Use atomic write: download to temp file, then rename on success
+            # This prevents partial/corrupt files if download is interrupted
+            temp_fd, temp_path = tempfile.mkstemp(dir=cache_path.parent, suffix='.tmp')
+            try:
+                with os.fdopen(temp_fd, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+                # Atomic rename - only happens if download completed successfully
+                os.rename(temp_path, cache_path)
+                logger.debug(f"Saved to {cache_path}")
+                return cache_path
+            except Exception:
+                # Clean up temp file on any failure
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+
         except requests.RequestException as e:
             logger.error(f"Failed to download {file_path}: {e}")
             return None

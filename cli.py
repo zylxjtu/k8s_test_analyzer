@@ -83,11 +83,11 @@ def _print_summary(data: dict):
     print(f"{'='*60}\n")
 
 
-def cmd_list_tabs(args):
-    """List tabs for a dashboard."""
+def cmd_list_tabs(_args):
+    """List tabs for the configured dashboard."""
     collector = DataCollector()
-    tabs = collector.list_tabs(args.dashboard or get_default_dashboard())
-    
+    tabs = collector.list_tabs(get_default_dashboard())
+
     print(f"Tabs ({len(tabs)}):")
     for tab in tabs:
         print(f"  - {tab}")
@@ -97,7 +97,7 @@ def cmd_list_tabs(args):
 def cmd_list_builds(args):
     """List builds for a tab."""
     collector = DataCollector()
-    dashboard = args.dashboard or get_default_dashboard()
+    dashboard = get_default_dashboard()
     builds = collector.list_builds(args.tab, dashboard=dashboard, limit=args.limit)
     
     print(f"Builds for {args.tab}:")
@@ -109,9 +109,9 @@ def cmd_list_builds(args):
 def cmd_summary(args):
     """Get dashboard summary."""
     from k8s_testlog_downloader.testgrid_client import TestGridClient
-    
+
     client = TestGridClient()
-    dashboard = args.dashboard or get_default_dashboard()
+    dashboard = get_default_dashboard()
     summary = client.get_dashboard_summary(dashboard)
     
     if args.format == 'json':
@@ -162,9 +162,9 @@ def cmd_summary(args):
 def cmd_status(args):
     """Get test failure status for latest build of each tab."""
     import json as json_mod
-    
+
     collector = DataCollector()
-    dashboard = args.dashboard or get_default_dashboard()
+    dashboard = get_default_dashboard()
     tabs = collector.list_tabs(dashboard)
     
     if args.tab:
@@ -256,15 +256,14 @@ def cmd_download(args):
     async def _download():
         from local_indexing import initialize_chromadb
         import core
-        
+
         await initialize_chromadb()
-        
-        dashboard = args.dashboard or get_default_dashboard()
+
         print(f"Downloading logs for tab: {args.tab}")
-        
+
         result = await core.download_and_index(
             tab=args.tab,
-            dashboard=dashboard,
+            dashboard=None,
             build_id=args.build,
             skip_indexing=args.skip_indexing,
             force_reindex=args.force_reindex
@@ -296,16 +295,16 @@ def cmd_download_all(args):
     async def _download_all():
         from local_indexing import initialize_chromadb
         import core
-        
+
         await initialize_chromadb()
-        
-        dashboard = args.dashboard or get_default_dashboard()
+
+        dashboard = get_default_dashboard()
         print(f"Downloading all tabs from dashboard: {dashboard}")
         if args.limit:
             print(f"Limit: {args.limit} tabs")
-        
+
         result = await core.download_all_and_index(
-            dashboard=dashboard,
+            dashboard=None,
             limit=args.limit,
             skip_indexing=args.skip_indexing,
             force_reindex=args.force_reindex
@@ -332,15 +331,13 @@ def cmd_search(args):
     async def _search():
         from local_indexing import initialize_chromadb
         import core
-        
+
         await initialize_chromadb()
-        
-        dashboard = args.dashboard or get_default_dashboard()
-        
+
         result = await core.search_logs(
             query=args.query,
             tab=args.tab,
-            dashboard=dashboard,
+            dashboard=None,
             n_results=args.n_results,
             threshold=args.threshold
         )
@@ -442,7 +439,7 @@ def cmd_index_stats(args):
             result = await core.get_build_index_status(
                 tab=args.tab,
                 build_id=args.build,
-                dashboard=args.dashboard
+                dashboard=None
             )
 
             if "error" in result:
@@ -469,7 +466,7 @@ def cmd_index_stats(args):
         # If tab is specified but no build ID, get status for latest build of that tab
         if args.tab:
             result = await core.get_all_latest_build_index_status(
-                dashboard=args.dashboard,
+                dashboard=None,
                 tabs=[args.tab]
             )
 
@@ -506,11 +503,11 @@ def cmd_index_stats(args):
             return 0
 
         # No tab specified - default to --all behavior (get status for all latest builds)
-        dashboard = args.dashboard or get_default_dashboard()
+        dashboard = get_default_dashboard()
         print(f"Fetching index status for latest builds in {dashboard}...")
         print()
 
-        result = await core.get_all_latest_build_index_status(dashboard=dashboard)
+        result = await core.get_all_latest_build_index_status(dashboard=None)
 
         if "error" in result:
             print(f"Error: {result['error']}", file=sys.stderr)
@@ -635,7 +632,7 @@ def cmd_compare(args):
             build_id_a=args.build_a,
             tab_b=tab_b,
             build_id_b=args.build_b,
-            dashboard=args.dashboard,
+            dashboard=None,
             filter_type=args.filter,
             max_chunks_per_build=args.max_chunks
         )
@@ -665,7 +662,7 @@ def cmd_find_regression(args):
 
         result = await core.find_regression(
             tab=args.tab,
-            dashboard=args.dashboard,
+            dashboard=None,
             max_builds=args.max_builds,
             filter_type=args.filter,
             max_chunks_per_build=args.max_chunks
@@ -729,23 +726,19 @@ def main():
     
     # list-tabs (original)
     p = sub.add_parser('list-tabs', help='List dashboard tabs')
-    p.add_argument('--dashboard', '-d')
-    
+
     # list-builds (original)
     p = sub.add_parser('list-builds', help='List builds for a tab')
     p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--limit', type=int, default=20)
-    
+
     # summary (original)
     p = sub.add_parser('summary', help='Get dashboard summary')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
     p.add_argument('--quiet', '-q', action='store_true', help='Only show counts, not failing tabs')
-    
+
     # status (original)
     p = sub.add_parser('status', help='Get test status for latest build of each tab')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--tab', '-t', help='Specific tab(s) to check (comma-separated)')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
     
@@ -756,7 +749,6 @@ def main():
     # download (mirrors download_test)
     p = sub.add_parser('download', help='Download and index test logs (MCP: download_test)')
     p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--build', '-b', help='Build ID')
     p.add_argument('--skip-indexing', action='store_true', help='Skip indexing after download')
     p.add_argument('--force-reindex', action='store_true', help='Delete collection and re-index all builds')
@@ -764,17 +756,15 @@ def main():
 
     # download-all (mirrors download_all_latest)
     p = sub.add_parser('download-all', help='Download and index all tabs (MCP: download_all_latest)')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--limit', type=int, help='Max tabs to fetch')
     p.add_argument('--skip-indexing', action='store_true', help='Skip indexing after download')
     p.add_argument('--force-reindex', action='store_true', help='Delete collections and re-index all builds')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
-    
+
     # search (mirrors search_log)
     p = sub.add_parser('search', help='Search indexed logs (MCP: search_log)')
     p.add_argument('query', help='Search query')
     p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--n-results', '-n', type=int, default=5, help='Number of results')
     p.add_argument('--threshold', type=float, default=30.0, help='Minimum relevance percentage')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
@@ -783,7 +773,7 @@ def main():
     p = sub.add_parser('reindex', help='Reindex a specific project (MCP: reindex_folder)')
     p.add_argument('project', help='Project/folder name to reindex')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
-    
+
     # reindex-all (mirrors reindex_all)
     p = sub.add_parser('reindex-all', help='Reindex all cached folders (MCP: reindex_all)')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
@@ -792,7 +782,6 @@ def main():
     p = sub.add_parser('index-stats', help='Get index status for builds (MCP: get_build_index_status)')
     p.add_argument('--build', '-b', help='Check index status of a specific build ID (requires --tab)')
     p.add_argument('--tab', '-t', help='TestGrid tab name (uses latest build if --build not specified)')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
 
     # cleanup (mirrors cleanup_builds)
@@ -809,7 +798,6 @@ def main():
     p.add_argument('--tab-b', help='TestGrid tab name for build B (defaults to tab-a for same-job comparison)')
     p.add_argument('--build-a', help='Build ID for build A (default: latest)')
     p.add_argument('--build-b', help='Build ID for build B (default: latest)')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--filter', choices=['all', 'interesting', 'errors', 'failures'], default='interesting',
                    help='Filter type for chunks (default: interesting)')
     p.add_argument('--max-chunks', type=int, default=100, help='Max chunks per category per build (default: 100)')
@@ -817,7 +805,6 @@ def main():
     # find-regression (mirrors find_regression)
     p = sub.add_parser('find-regression', help='Find and compare last pass with first fail (MCP: find_regression)')
     p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
-    p.add_argument('--dashboard', '-d', help='Dashboard name')
     p.add_argument('--max-builds', type=int, default=10, help='Max cached builds to check (default: 10)')
     p.add_argument('--filter', choices=['all', 'interesting', 'errors', 'failures'], default='interesting',
                    help='Filter type for chunks (default: interesting)')

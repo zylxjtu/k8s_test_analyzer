@@ -825,16 +825,17 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
 
             # Check if this build has partial chunks (from interrupted indexing)
             # If so, delete them before re-indexing
-            partial_chunks = _get_indexed_build_ids(collection_name)
+            partial_chunks = await asyncio.to_thread(_get_indexed_build_ids, collection_name)
             if build_id in partial_chunks and build_id not in completed_builds:
                 logger.info(f"Removing partial index for interrupted build {build_id}")
-                delete_build_from_index(collection_name, build_id)
+                await asyncio.to_thread(delete_build_from_index, collection_name, build_id)
 
-            build_docs = load_documents(
+            build_docs = await asyncio.to_thread(
+                load_documents,
                 build_path,
-                ignore_dirs=set(config["ignore_dirs"]),
-                file_extensions=set(config["file_extensions"]),
-                ignore_files=set(config["ignore_files"])
+                set(config["ignore_dirs"]),
+                set(config["file_extensions"]),
+                set(config["ignore_files"])
             )
 
             if not build_docs:
@@ -848,8 +849,11 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
                 if hasattr(doc, 'metadata'):
                     doc.metadata['build_id'] = build_id
 
-            # Index this build's documents
-            process_and_index_documents(build_docs, collection_name, "chroma_db")
+            # Index this build's documents in a thread to avoid blocking the event loop
+            # This allows the MCP server to remain responsive during indexing
+            await asyncio.to_thread(
+                process_and_index_documents, build_docs, collection_name, "chroma_db"
+            )
 
             # Mark build as completed AFTER successful indexing
             _mark_build_completed(collection_name, build_id)

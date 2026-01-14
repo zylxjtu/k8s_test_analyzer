@@ -136,17 +136,17 @@ Key environment variables (can be set in `.env` file):
 
 ## MCP Tools Available
 
-The MCP server exposes these tools (all mirror CLI commands):
+The MCP server exposes these tools (all mirror CLI commands). All tools use the dashboard configured via the `DEFAULT_DASHBOARD` environment variable.
 
 | MCP Tool | CLI Command | Description |
 |----------|-------------|-------------|
 | `download_test` | `download` | Download and index test logs for a specific tab |
-| `download_all_latest` | `download-all` | Download and index all tabs from a dashboard |
+| `download_all_latest` | `download-all` | Download and index all tabs from the configured dashboard |
 | `search_log` | `search` | Semantic search over indexed logs |
 | `compare_build_logs` | `compare` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | `find-regression` | Find and compare last pass with first fail from cached builds |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
-| `list_dashboard_tabs` | `list-tabs` | List available tabs in a dashboard |
+| `list_dashboard_tabs` | `list-tabs` | List available tabs in the configured dashboard |
 | `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
 | `get_tab_status` | `status` | Get test results for latest build of each tab |
 | `reindex_folder` | `reindex` | Force re-index a specific project |
@@ -178,8 +178,8 @@ The MCP server exposes these tools (all mirror CLI commands):
 3. Review search results for relevant log sections
 
 ### Monitoring Dashboard Health
-1. Get quick status: `get_testgrid_summary(dashboard="sig-windows-signal")`
-2. For detailed results: `get_tab_status(dashboard="sig-windows-signal")`
+1. Get quick status: `get_testgrid_summary()` (uses DEFAULT_DASHBOARD from env)
+2. For detailed results: `get_tab_status()` or `get_tab_status(tabs="specific-tab")`
 
 ### Investigating Flaky Tests
 1. Download multiple builds: Use `download_test()` with different `build_id` parameters

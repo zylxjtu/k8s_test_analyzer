@@ -36,7 +36,6 @@ mcp = FastMCP("k8s-test-analyzer")
         Args:
             query: Natural language query about the logs/codebase
             tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
-            dashboard: Dashboard name (optional, uses default if not specified)
             n_results: Number of results to return (default: 5)
             threshold: Minimum relevance percentage to include results (default: 30.0)
     """
@@ -44,12 +43,11 @@ mcp = FastMCP("k8s-test-analyzer")
 async def search_log(
     query: str,
     tab: str,
-    dashboard: str = None,
     n_results: int = 5,
     threshold: float = 30.0
 ) -> str:
     try:
-        result = await core.search_logs(query, tab, dashboard, n_results, threshold)
+        result = await core.search_logs(query, tab, None, n_results, threshold)
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
         logger.error(f"Error in search_log: {str(e)}")
@@ -64,7 +62,6 @@ async def search_log(
     Use force_reindex=True to delete and re-index everything.
     Args:
         tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
-        dashboard: Dashboard name (optional, uses default if not specified)
         build_id: Build ID (optional, fetches latest if not specified)
         skip_indexing: Skip indexing after download (default: False)
         force_reindex: Force delete collection and re-index all builds (default: False)
@@ -72,12 +69,11 @@ async def search_log(
 )
 async def download_test(
     tab: str,
-    dashboard: str = None,
     build_id: str = None,
     skip_indexing: bool = False,
     force_reindex: bool = False
 ) -> str:
-    result = await core.download_and_index(tab, dashboard, build_id, skip_indexing, force_reindex)
+    result = await core.download_and_index(tab, None, build_id, skip_indexing, force_reindex)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -86,12 +82,11 @@ async def download_test(
     description="""List recent builds for a tab.
     Args:
         tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
-        dashboard: Dashboard name (optional, uses default if not specified)
         limit: Maximum number of builds (default: 10)
     """
 )
-async def list_recent_builds(tab: str, dashboard: str = None, limit: int = 10) -> str:
-    result = core.list_builds(tab, dashboard, limit)
+async def list_recent_builds(tab: str, limit: int = 10) -> str:
+    result = core.list_builds(tab, None, limit)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -99,64 +94,57 @@ async def list_recent_builds(tab: str, dashboard: str = None, limit: int = 10) -
     name="get_testgrid_summary",
     description="""Get TestGrid dashboard summary.
     Args:
-        dashboard: Dashboard name
-        tab: Tab name (optional)
+        tab: Tab name (optional, returns full dashboard summary if not specified)
     """
 )
-async def get_testgrid_summary(dashboard: str, tab: str = None) -> str:
-    result = core.get_testgrid_summary(dashboard, tab)
+async def get_testgrid_summary(tab: str = None) -> str:
+    result = core.get_testgrid_summary(None, tab)
     return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool(
     name="get_tab_status",
     description="""Get test results status for latest build of each tab.
-    
+
     Fetches the latest finished build for each tab and returns test pass/fail counts.
     Status is PASS if failed==0 and total>0, FAIL if failed>0 or total==0, ERROR if fetch failed.
-    
+
     Args:
-        dashboard: Dashboard name (e.g., "sig-windows-signal")
         tabs: Comma-separated tab names to check (optional, defaults to all tabs)
     """
 )
-async def get_tab_status(dashboard: str = None, tabs: str = None) -> str:
-    result = await core.get_tab_status(dashboard, tabs)
+async def get_tab_status(tabs: str = None) -> str:
+    result = await core.get_tab_status(None, tabs)
     return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool(
     name="list_dashboard_tabs",
-    description="""List available tabs for a dashboard.
-    Args:
-        dashboard: Dashboard name
-    """
+    description="""List available tabs for the configured dashboard."""
 )
-async def list_dashboard_tabs(dashboard: str) -> str:
-    result = core.list_tabs(dashboard)
+async def list_dashboard_tabs() -> str:
+    result = core.list_tabs(None)
     return json.dumps(result, indent=2)
 
 
 @mcp.tool(
     name="download_all_latest",
-    description="""Download and index test data for all tabs in a dashboard.
+    description="""Download and index test data for all tabs in the configured dashboard.
     Downloads are cached - files already downloaded will be skipped.
     Indexing is incremental - only new builds will be indexed, already indexed builds are skipped.
     Use force_reindex=True to delete and re-index everything.
     Args:
-        dashboard: Dashboard name (optional)
         limit: Maximum tabs to fetch (optional)
         skip_indexing: Skip indexing after download (default: False)
         force_reindex: Force delete collections and re-index all builds (default: False)
     """
 )
 async def download_all_latest(
-    dashboard: str = None,
     limit: int = None,
     skip_indexing: bool = False,
     force_reindex: bool = False
 ) -> str:
-    result = await core.download_all_and_index(dashboard, limit, skip_indexing, force_reindex)
+    result = await core.download_all_and_index(None, limit, skip_indexing, force_reindex)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -202,7 +190,6 @@ async def reindex_all() -> str:
     Args:
         tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow"). If not specified, returns status for all tabs.
         build_id: Build ID to check (optional, uses latest cached build if not specified)
-        dashboard: Dashboard name (optional, uses default if not specified)
 
     Returns:
         Status information including:
@@ -215,14 +202,13 @@ async def reindex_all() -> str:
 )
 async def get_index_status(
     tab: str = None,
-    build_id: str = None,
-    dashboard: str = None
+    build_id: str = None
 ) -> str:
     try:
         # No tab specified - get status for all tabs
         if tab is None:
             result = await core.get_all_latest_build_index_status(
-                dashboard=dashboard,
+                dashboard=None,
                 tabs=None
             )
             return json.dumps(result, indent=2)
@@ -230,7 +216,7 @@ async def get_index_status(
         # Tab specified but no build_id - get status for latest build of this tab
         if build_id is None:
             result = await core.get_all_latest_build_index_status(
-                dashboard=dashboard,
+                dashboard=None,
                 tabs=[tab]
             )
             # Return just the tab result for single-tab query
@@ -242,7 +228,7 @@ async def get_index_status(
         result = await core.get_build_index_status(
             tab=tab,
             build_id=build_id,
-            dashboard=dashboard
+            dashboard=None
         )
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -265,7 +251,6 @@ async def get_index_status(
         build_id_a: Build ID for build A (optional, uses latest if not specified)
         tab_b: TestGrid tab name for build B (optional, defaults to tab_a for same-job comparison)
         build_id_b: Build ID for build B (optional, uses latest if not specified)
-        dashboard: Dashboard name (optional, uses default if not specified)
         filter_type: Filter chunks - "all", "interesting" (default), "errors", "failures"
         max_chunks_per_build: Maximum chunks per category per build (default: 100)
     """
@@ -275,7 +260,6 @@ async def compare_build_logs(
     build_id_a: str = None,
     tab_b: str = None,
     build_id_b: str = None,
-    dashboard: str = None,
     filter_type: str = "interesting",
     max_chunks_per_build: int = 100
 ) -> str:
@@ -285,7 +269,7 @@ async def compare_build_logs(
             build_id_a=build_id_a,
             tab_b=tab_b,
             build_id_b=build_id_b,
-            dashboard=dashboard,
+            dashboard=None,
             filter_type=filter_type,
             max_chunks_per_build=max_chunks_per_build
         )
@@ -312,7 +296,6 @@ async def compare_build_logs(
 
     Args:
         tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
-        dashboard: Dashboard name (optional, uses default if not specified)
         max_builds: Maximum number of cached builds to check (default: 10)
         filter_type: Filter chunks - "all", "interesting" (default), "errors", "failures"
         max_chunks_per_build: Maximum chunks per category per build (default: 100)
@@ -320,7 +303,6 @@ async def compare_build_logs(
 )
 async def find_regression(
     tab: str,
-    dashboard: str = None,
     max_builds: int = 10,
     filter_type: str = "interesting",
     max_chunks_per_build: int = 100
@@ -328,7 +310,7 @@ async def find_regression(
     try:
         result = await core.find_regression(
             tab=tab,
-            dashboard=dashboard,
+            dashboard=None,
             max_builds=max_builds,
             filter_type=filter_type,
             max_chunks_per_build=max_chunks_per_build

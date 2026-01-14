@@ -2,10 +2,13 @@
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -25,21 +28,63 @@ class TestGridJob:
 
 class TestGridClient:
     """Client for accessing TestGrid API."""
-    
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "k8s-test-analyzer/0.1.0",
             "Accept": "application/json"
         })
+
+        # Configure retry strategy for transient network errors
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,  # Wait 1s, 2s, 4s between retries
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+            raise_on_status=False
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
     
+    def _request_with_retry(self, url: str, max_retries: int = 3) -> Optional[requests.Response]:
+        """Make a GET request with retry logic for connection errors.
+
+        The HTTPAdapter handles HTTP-level retries (429, 5xx), but connection errors
+        like RemoteDisconnected need explicit retry logic.
+        """
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(url, timeout=30)
+                return response
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Connection error (attempt {attempt + 1}/{max_retries}), "
+                                   f"retrying in {wait_time}s: {e}")
+                    time.sleep(wait_time)
+            except requests.RequestException as e:
+                # Non-retryable errors
+                last_error = e
+                break
+
+        if last_error:
+            raise last_error
+        return None
+
     def list_dashboard_tabs(self, dashboard: str) -> list[str]:
         """List all available tabs for a dashboard."""
         url = f"{TESTGRID_BASE_URL}/{dashboard}/summary"
         try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            return sorted(response.json().keys())
+            response = self._request_with_retry(url)
+            if response:
+                response.raise_for_status()
+                return sorted(response.json().keys())
+            return []
         except requests.RequestException as e:
             logger.error(f"Failed to list dashboard tabs: {e}")
             return []
@@ -48,7 +93,9 @@ class TestGridClient:
         """Get summary of all jobs in a dashboard."""
         url = f"{TESTGRID_BASE_URL}/{dashboard}/summary"
         try:
-            response = self.session.get(url, timeout=30)
+            response = self._request_with_retry(url)
+            if not response:
+                return {"name": dashboard, "jobs": []}
             response.raise_for_status()
             data = response.json()
             
@@ -93,7 +140,9 @@ class TestGridClient:
         """Get detailed info about a specific tab."""
         url = f"{TESTGRID_BASE_URL}/api/v1/dashboards/{dashboard}/tabs/{tab}/headers"
         try:
-            response = self.session.get(url, timeout=30)
+            response = self._request_with_retry(url)
+            if not response:
+                return None
             response.raise_for_status()
             return {"headers": response.json(), "dashboard": dashboard, "tab": tab}
         except requests.RequestException as e:
@@ -146,8 +195,8 @@ class TestGridClient:
         """Get prowjob name (GCS directory) for a TestGrid tab."""
         url = f"{TESTGRID_BASE_URL}/{dashboard}/summary"
         try:
-            response = self.session.get(url, timeout=30)
-            if response.status_code == 200:
+            response = self._request_with_retry(url)
+            if response and response.status_code == 200:
                 data = response.json()
                 if tab in data:
                     tests = data[tab].get('tests', [])
