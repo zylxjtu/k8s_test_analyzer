@@ -21,7 +21,7 @@ The MCP server provides AI assistants with tools to analyze Kubernetes test logs
 # Run with Docker (recommended)
 ./generate-env.sh
 docker compose build
-UID=$(id -u) GID=$(id -g) docker compose up -d
+DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) docker compose up -d
 
 # Or run directly (requires Python setup - see Development section)
 python mcp_server.py
@@ -37,7 +37,7 @@ To use the MCP server with Claude Code CLI:
 
 2. Add the server to Claude Code:
 ```bash
-claude mcp add --transport sse k8s-test-analyzer http://localhost:8978/sse
+claude mcp add --scope user --transport sse k8s-test-analyzer http://localhost:8978/sse
 ```
 
 3. Verify the connection:

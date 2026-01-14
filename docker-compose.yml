@@ -6,7 +6,7 @@ services:
       args:
         FASTMCP_PORT: ${FASTMCP_PORT:-8978}
     container_name: k8s-test-analyzer
-    user: "${UID:-0}:${GID:-0}"  # Run as host user; defaults to root (0:0) if not specified
+    user: "${DOCKER_UID:-0}:${DOCKER_GID:-0}"  # Run as host user; defaults to root (0:0) if not specified
     network_mode: host  # Use host networking for better performance
     volumes:
       - ${PROJECTS_ROOT}:/projects
