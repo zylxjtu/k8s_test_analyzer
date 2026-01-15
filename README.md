@@ -108,8 +108,6 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 | `search_log` | Semantic search over indexed logs |
 | `compare_build_logs` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | Find and compare last pass with first fail from cached builds |
-| `reindex_folder` | Force re-index a specific project/folder |
-| `reindex_all` | Force re-index all cached project folders |
 | `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
 
 ### Environment Variables

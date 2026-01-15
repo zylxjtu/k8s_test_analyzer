@@ -149,33 +149,6 @@ async def download_all_latest(
 
 
 @mcp.tool(
-    name="reindex_folder",
-    description="""Force re-index a specific project/folder.
-    Args:
-        project_name: The project/folder name to re-index (e.g., "ci-kubernetes-e2e-capz-1-33-windows-serial-slow")
-    """
-)
-async def reindex_folder(project_name: str) -> str:
-    result = await core.reindex_project(project_name)
-    return json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool(
-    name="reindex_all",
-    description="""Force re-index all cached project folders.
-    Re-indexes every folder in the cache directory, useful after manual changes or to refresh all indexes.
-    """
-)
-async def reindex_all() -> str:
-    try:
-        result = await core.reindex_all_projects()
-        return json.dumps(result, indent=2, default=str)
-    except Exception as e:
-        logger.error(f"Error during reindex_all: {e}")
-        return json.dumps({"error": str(e)})
-
-
-@mcp.tool(
     name="get_index_status",
     description="""Get the indexing status for builds.
 
