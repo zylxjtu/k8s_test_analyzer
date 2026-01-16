@@ -7,16 +7,11 @@ Provides tools for downloading K8s CI test logs and searching indexed content.
 import os
 import logging
 import json
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-
 import asyncio
 from fastmcp import FastMCP
 
 # Local imports
-from local_indexing import initialize_chromadb, perform_initial_indexing
+from local_indexing import initialize_chromadb, perform_initial_indexing, write_heartbeat
 import core
 
 # Configure logging
@@ -36,6 +31,7 @@ mcp = FastMCP("k8s-test-analyzer")
         Args:
             query: Natural language query about the logs/codebase
             tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
+            build_id: Build ID to search within (uses latest cached build if not specified)
             n_results: Number of results to return (default: 5)
             threshold: Minimum relevance percentage to include results (default: 30.0)
     """
@@ -43,11 +39,12 @@ mcp = FastMCP("k8s-test-analyzer")
 async def search_log(
     query: str,
     tab: str,
+    build_id: str = None,
     n_results: int = 5,
     threshold: float = 30.0
 ) -> str:
     try:
-        result = await core.search_logs(query, tab, None, n_results, threshold)
+        result = await core.search_logs(query, tab, None, n_results, threshold, build_id)
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
         logger.error(f"Error in search_log: {str(e)}")
@@ -303,11 +300,13 @@ CLEANUP_KEEP_BUILDS = int(os.getenv("CLEANUP_KEEP_BUILDS", "10"))
 
 async def run_download_and_cleanup():
     """Execute the download, index, and cleanup operations once."""
+    write_heartbeat()  # Start of task
     logger.info("Starting scheduled download and reindex...")
 
     # Download and index new builds
     try:
         result = await core.download_all_and_index(skip_indexing=False)
+        write_heartbeat()  # After download/index
 
         if "error" in result:
             logger.error(f"Download failed: {result.get('error')}")
@@ -319,6 +318,7 @@ async def run_download_and_cleanup():
 
     except Exception as e:
         logger.error(f"Error during download/index: {e}", exc_info=True)
+        write_heartbeat()  # Update even on error
         return False
 
     # Clean up old builds
@@ -335,6 +335,7 @@ async def run_download_and_cleanup():
     else:
         logger.info("Cleanup disabled (CLEANUP_KEEP_BUILDS=0)")
 
+    write_heartbeat()  # End of task
     logger.info("Scheduled task complete")
     return True
 

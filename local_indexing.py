@@ -5,7 +5,10 @@ Handles ChromaDB initialization, document loading, and indexing.
 
 import os
 import logging
+import signal
+import time
 from typing import List, Set
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import chromadb
 from chromadb.config import Settings
@@ -75,12 +78,49 @@ embedding_function = None
 
 # Asyncio lock for serializing indexing operations
 # This prevents concurrent writes to ChromaDB which can corrupt the HNSW index
+# Note: Lock is created lazily via _get_indexing_lock() to ensure it's in the correct event loop
 import asyncio
-_indexing_lock = asyncio.Lock()
+_indexing_lock = None
+
+def _get_indexing_lock():
+    """Get or create the indexing lock in the current event loop.
+
+    Creating asyncio.Lock at module import time can cause issues if the lock
+    is bound to a different event loop than the one running the async code.
+    """
+    global _indexing_lock
+    if _indexing_lock is None:
+        _indexing_lock = asyncio.Lock()
+    return _indexing_lock
 
 # Threading lock for completion marker updates (sync operations)
 import threading
 _completion_marker_lock = threading.Lock()
+
+# Heartbeat for health monitoring
+_HEARTBEAT_PATH = None
+
+def _get_heartbeat_path():
+    """Get heartbeat file path based on projects_root."""
+    global _HEARTBEAT_PATH
+    if _HEARTBEAT_PATH is None:
+        projects_root = os.getenv("PROJECTS_ROOT", os.path.expanduser("~/.k8s_testlog_cache"))
+        _HEARTBEAT_PATH = os.path.join(projects_root, ".indexing_heartbeat")
+    return _HEARTBEAT_PATH
+
+def write_heartbeat():
+    """Write current timestamp to heartbeat file (atomic).
+
+    Used by Docker healthcheck to detect hung indexing processes.
+    """
+    try:
+        path = _get_heartbeat_path()
+        temp = path + ".tmp"
+        with open(temp, "w") as f:
+            f.write(str(time.time()))
+        os.replace(temp, path)  # Atomic rename
+    except Exception as e:
+        logger.warning(f"Failed to write heartbeat: {e}")
 
 
 def sanitize_collection_name(folder_name: str) -> str:
@@ -457,7 +497,14 @@ def process_and_index_documents(
                     start_line = 1
                     end_line = len(node.text.split("\n"))
 
-                chunk_id = f"{file_path}_{start_line}_{end_line}_{i}"
+                # Include build_id in chunk_id to prevent collisions between builds
+                # Different jobs/tabs have separate collections, but within a collection
+                # multiple builds may have same file paths - build_id ensures uniqueness
+                build_id = node.metadata.get("build_id", "")
+                if build_id:
+                    chunk_id = f"{build_id}_{file_path}_{start_line}_{end_line}_{i}"
+                else:
+                    chunk_id = f"{file_path}_{start_line}_{end_line}_{i}"
 
                 metadata = {
                     "file_path": file_path,
@@ -483,6 +530,9 @@ def process_and_index_documents(
             )
 
             total_nodes += len(nodes)
+
+            # Update heartbeat after each file to indicate progress
+            write_heartbeat()
 
         except Exception as e:
             logger.error(
@@ -762,7 +812,7 @@ async def index_project(project_name: str, force: bool = False) -> dict:
         dict with indexing results
     """
     # Acquire lock to prevent concurrent indexing (protects ChromaDB HNSW index)
-    async with _indexing_lock:
+    async with _get_indexing_lock():
         return await _index_project_impl(project_name, force)
 
 

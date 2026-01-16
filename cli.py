@@ -339,16 +339,18 @@ def cmd_search(args):
             tab=args.tab,
             dashboard=None,
             n_results=args.n_results,
-            threshold=args.threshold
+            threshold=args.threshold,
+            build_id=args.build_id
         )
-        
+
         if "error" in result:
             print(f"Error: {result['error']}", file=sys.stderr)
             if result.get("available_collections"):
                 print(f"Available collections: {result['available_collections']}", file=sys.stderr)
             return 1
-        
+
         print(f"Searching in project: {result.get('project_name')}")
+        print(f"Build ID: {result.get('build_id')}")
         print(f"Query: {args.query}")
         print()
         
@@ -765,6 +767,7 @@ def main():
     p = sub.add_parser('search', help='Search indexed logs (MCP: search_log)')
     p.add_argument('query', help='Search query')
     p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
+    p.add_argument('--build-id', '-b', help='Build ID to search (uses latest cached build if not specified)')
     p.add_argument('--n-results', '-n', type=int, default=5, help='Number of results')
     p.add_argument('--threshold', type=float, default=30.0, help='Minimum relevance percentage')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')

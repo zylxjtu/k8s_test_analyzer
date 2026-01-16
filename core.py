@@ -126,24 +126,26 @@ async def search_logs(
     tab: str,
     dashboard: str = None,
     n_results: int = 5,
-    threshold: float = 30.0
+    threshold: float = 30.0,
+    build_id: str = None
 ) -> dict:
     """
     Search indexed logs using semantic search.
-    
+
     Args:
         query: Natural language search query
         tab: TestGrid tab name
         dashboard: Dashboard name (uses default if not specified)
         n_results: Number of results to return
         threshold: Minimum relevance percentage
-    
+        build_id: Build ID to search within (uses latest cached build if not specified)
+
     Returns:
         dict with search results
     """
     chroma_client = get_chroma_client()
     embedding_function = get_embedding_function()
-    
+
     if not chroma_client or not embedding_function:
         logger.error("ChromaDB client or embedding function not initialized")
         return {
@@ -156,7 +158,20 @@ async def search_logs(
     c = get_collector()
     dashboard = dashboard or get_default_dashboard()
     project_name = c._get_gcs_job_name(dashboard, tab)
-    logger.info(f"Searching in project: {project_name} (tab: {tab})")
+
+    # If no build_id specified, use the latest cached build
+    if build_id is None:
+        build_id = _get_latest_build_id(project_name)
+        if build_id is None:
+            return {
+                "error": f"No cached builds found for tab '{tab}'. Run download first.",
+                "tab": tab,
+                "project_name": project_name,
+                "results": [],
+                "total_results": 0
+            }
+
+    logger.info(f"Searching in project: {project_name} (tab: {tab}, build_id: {build_id})")
 
     # Get all collections
     collections = chroma_client.list_collections()
@@ -189,9 +204,11 @@ async def search_logs(
     for collection_name in matching_collections:
         collection = chroma_client.get_collection(collection_name)
 
+        # Filter by build_id to search only within the specified build
         results = collection.query(
             query_texts=[query],
             n_results=n_results,
+            where={"build_id": str(build_id)},
             include=["documents", "metadatas", "distances"]
         )
 
@@ -210,7 +227,8 @@ async def search_logs(
                         "start_line": int(meta.get("start_line", 0)),
                         "end_line": int(meta.get("end_line", 0)),
                         "relevance": round(similarity, 1),
-                        "collection": collection.name
+                        "collection": collection.name,
+                        "build_id": meta.get("build_id", build_id)
                     })
 
     # Sort results by relevance
@@ -222,6 +240,7 @@ async def search_logs(
     return {
         "tab": tab,
         "project_name": project_name,
+        "build_id": build_id,
         "query": query,
         "results": final_results,
         "total_results": len(final_results)

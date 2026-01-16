@@ -105,7 +105,7 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 | `list_dashboard_tabs` | List tabs in the configured dashboard |
 | `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
 | `get_tab_status` | Get test results for latest build of tabs specified |
-| `search_log` | Semantic search over indexed logs |
+| `search_log` | Semantic search over indexed logs (filters by build_id, defaults to latest) |
 | `compare_build_logs` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | Find and compare last pass with first fail from cached builds |
 | `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
@@ -121,6 +121,7 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 | `ADDITIONAL_IGNORE_DIRS` | | Extra directories to ignore |
 | `SCHEDULE_INTERVAL_SECONDS` | `3600` | Scheduled task interval (0 to disable) |
 | `CLEANUP_KEEP_BUILDS` | `10` | Builds to keep per job during cleanup (0 to disable) |
+| `HEALTHCHECK_MAX_AGE` | `300` | Heartbeat staleness threshold for Docker healthcheck (seconds) |
 
 ---
 
@@ -215,8 +216,11 @@ k8s-test-analyzer download --tab capz-windows-1-33-serial-slow --build 123456789
 # Download and index all tabs from a dashboard
 k8s-test-analyzer download-all
 
-# Search indexed logs (requires specifying which tab's logs to search)
+# Search indexed logs (searches latest cached build by default)
 k8s-test-analyzer search "timeout error" --tab capz-windows-1-33-serial-slow
+
+# Search within a specific build
+k8s-test-analyzer search "timeout error" --tab capz-windows-1-33-serial-slow --build-id 1234567890123
 
 # Check index status of latest build for a specific tab
 k8s-test-analyzer index-stats --tab capz-windows-1-33-serial-slow
@@ -272,7 +276,7 @@ k8s-test-analyzer reindex-all
 
 # Build and run
 docker compose build
-UID=$(id -u) GID=$(id -g) docker compose up -d
+DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) docker compose up -d
 
 # View logs
 docker compose logs -f

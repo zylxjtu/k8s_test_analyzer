@@ -21,4 +21,11 @@ services:
       - ADDITIONAL_IGNORE_FILES=${ADDITIONAL_IGNORE_FILES}  # Additional files to ignore
       - SCHEDULE_INTERVAL_SECONDS=${SCHEDULE_INTERVAL_SECONDS:-1800}
       - CLEANUP_KEEP_BUILDS=${CLEANUP_KEEP_BUILDS:-10}
+      - HEALTHCHECK_MAX_AGE=${HEALTHCHECK_MAX_AGE:-300}  # Heartbeat staleness threshold (seconds)
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s  # Allow 3 minutes for initial startup/indexing

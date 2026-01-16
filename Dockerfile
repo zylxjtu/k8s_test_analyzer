@@ -20,6 +20,7 @@ COPY k8s_testlog_downloader/ ./k8s_testlog_downloader/
 COPY mcp_server.py .
 COPY core.py .
 COPY local_indexing.py .
+COPY healthcheck.py .
 
 # Expose the FastMCP port
 EXPOSE ${FASTMCP_PORT}

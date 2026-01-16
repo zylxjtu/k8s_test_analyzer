@@ -133,6 +133,7 @@ Key environment variables (can be set in `.env` file):
 | `FASTMCP_PORT` | `8978` | MCP server port |
 | `SCHEDULE_INTERVAL_SECONDS` | `3600` | Auto-sync interval (0 to disable) |
 | `CLEANUP_KEEP_BUILDS` | `10` | Builds to keep per job during cleanup (0 to disable) |
+| `HEALTHCHECK_MAX_AGE` | `300` | Heartbeat staleness threshold for Docker healthcheck (seconds) |
 
 ## MCP Tools Available
 
@@ -142,7 +143,7 @@ The MCP server exposes these tools (all mirror CLI commands). All tools use the 
 |----------|-------------|-------------|
 | `download_test` | `download` | Download and index test logs for a specific tab |
 | `download_all_latest` | `download-all` | Download and index all tabs from the configured dashboard |
-| `search_log` | `search` | Semantic search over indexed logs |
+| `search_log` | `search` | Semantic search over indexed logs (filters by build_id, defaults to latest) |
 | `compare_build_logs` | `compare` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | `find-regression` | Find and compare last pass with first fail from cached builds |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
@@ -174,8 +175,9 @@ The MCP server exposes these tools (all mirror CLI commands). All tools use the 
 
 ### Debugging a Specific Test Failure
 1. Download the logs: `download_test(tab="capz-windows-1-33-serial-slow")`
-2. Search for error patterns: `search_log(query="timeout waiting for pod", tab="capz-windows-1-33-serial-slow")`
-3. Review search results for relevant log sections
+2. Search for error patterns: `search_log(query="timeout waiting for pod", tab="capz-windows-1-33-serial-slow")` (searches latest build by default)
+3. Search a specific build: `search_log(query="timeout", tab="capz-windows-1-33-serial-slow", build_id="1234567890")`
+4. Review search results for relevant log sections
 
 ### Monitoring Dashboard Health
 1. Get quick status: `get_testgrid_summary()` (uses DEFAULT_DASHBOARD from env)
