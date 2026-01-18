@@ -23,6 +23,10 @@ services:
       - CLEANUP_KEEP_BUILDS=${CLEANUP_KEEP_BUILDS:-10}
       - HEALTHCHECK_MAX_AGE=${HEALTHCHECK_MAX_AGE:-300}  # Heartbeat staleness threshold (seconds)
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
     healthcheck:
       test: ["CMD", "python", "healthcheck.py"]
       interval: 60s
