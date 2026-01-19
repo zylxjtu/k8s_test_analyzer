@@ -207,6 +207,35 @@ async def get_index_status(
 
 
 @mcp.tool(
+    name="get_test_failures",
+    description="""Get parsed JUnit test failures for a build, grouped by SIG.
+
+    Parses JUnit XML files from cached builds and returns structured test failure
+    information grouped by SIG (Special Interest Group). Much more useful than raw
+    log chunks for understanding what tests failed and why.
+
+    Args:
+        tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
+        build_id: Build ID (optional, uses latest cached build if not specified)
+    """
+)
+async def get_test_failures(
+    tab: str,
+    build_id: str = None
+) -> str:
+    try:
+        result = await core.get_test_failures(
+            tab=tab,
+            build_id=build_id,
+            dashboard=None
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"Error in get_test_failures: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool(
     name="compare_build_logs",
     description="""Compare logs between two Kubernetes CI builds.
 

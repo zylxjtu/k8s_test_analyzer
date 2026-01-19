@@ -9,7 +9,10 @@ import json
 import logging
 from typing import Optional
 
+from pathlib import Path
 from k8s_testlog_downloader.data_collector import DataCollector, get_default_dashboard
+from k8s_testlog_downloader.junit_parser import JUnitParser
+from k8s_testlog_downloader.models import TestStatus
 from local_indexing import (
     initialize_chromadb,
     index_project,
@@ -1295,3 +1298,117 @@ def _categorize_chunks(chunks: list, filter_type: str, max_per_category: int) ->
         result[f"{cat}_count"] = len(items)
 
     return result
+
+
+async def get_test_failures(
+    tab: str,
+    build_id: str = None,
+    dashboard: str = None,
+    max_stack_trace_length: int = 1000
+) -> dict:
+    """
+    Get parsed JUnit test failures for a build, grouped by SIG.
+
+    Parses JUnit XML files from cached builds and returns structured test failure
+    information grouped by SIG (Special Interest Group).
+
+    Args:
+        tab: TestGrid tab name
+        build_id: Build ID (optional, uses latest cached if not specified)
+        dashboard: Dashboard name (uses DEFAULT_DASHBOARD if not specified)
+        max_stack_trace_length: Truncate stack traces to this length (default 1000)
+
+    Returns:
+        dict with summary and failed_tests grouped by SIG
+    """
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+
+    # Resolve job name from tab
+    job_name = c._get_gcs_job_name(dashboard, tab)
+    if not job_name:
+        return {"error": f"Could not resolve job name for tab '{tab}' in dashboard '{dashboard}'"}
+
+    config = get_config()
+    job_path = Path(config["projects_root"]) / job_name
+
+    # Resolve build_id if not specified
+    if build_id is None or build_id.lower() == "latest":
+        build_id = _get_latest_build_id(job_name)
+        if not build_id:
+            return {"error": f"No cached builds found for job {job_name}. Download a build first."}
+        logger.info(f"Using latest cached build: {build_id}")
+
+    build_path = job_path / build_id
+    if not build_path.exists():
+        return {"error": f"Build {build_id} not found in cache. Download it first."}
+
+    # Find JUnit XML files
+    artifacts_path = build_path / "artifacts"
+    junit_files = list(artifacts_path.glob("junit*.xml")) if artifacts_path.exists() else []
+
+    if not junit_files:
+        return {
+            "error": f"No JUnit XML files found in {artifacts_path}",
+            "tab": tab,
+            "build_id": build_id
+        }
+
+    # Parse JUnit files
+    parser = JUnitParser()
+    all_suites = []
+    for junit_file in junit_files:
+        suites = parser.parse_file(junit_file)
+        all_suites.extend(suites)
+
+    if not all_suites:
+        return {
+            "error": "Failed to parse JUnit XML files",
+            "tab": tab,
+            "build_id": build_id,
+            "junit_files": [str(f) for f in junit_files]
+        }
+
+    # Get summary
+    summary = parser.get_test_summary(all_suites)
+
+    # Get failed tests with enriched data
+    failed_tests = parser.get_failed_tests(all_suites)
+
+    # Build enriched test data and group by SIG
+    grouped_by_sig = {}
+    for test in failed_tests:
+        # Extract K8s e2e test name components
+        components = parser.extract_test_name_components(test.name)
+        sig = components["sig"] or "unknown"
+
+        # Truncate stack trace if needed
+        stack_trace = test.stack_trace or ""
+        if len(stack_trace) > max_stack_trace_length:
+            stack_trace = stack_trace[:max_stack_trace_length] + "... (truncated)"
+
+        test_data = {
+            "name": test.name,
+            "classname": test.classname,
+            "status": test.status.value,
+            "failure_message": test.failure_message,
+            "failure_type": test.failure_type,
+            "stack_trace": stack_trace,
+            "duration_seconds": test.duration_seconds,
+            "sig": sig,
+            "feature": components["feature"],
+            "tags": components["tags"]
+        }
+
+        if sig not in grouped_by_sig:
+            grouped_by_sig[sig] = []
+        grouped_by_sig[sig].append(test_data)
+
+    return {
+        "tab": tab,
+        "build_id": build_id,
+        "job": job_name,
+        "junit_files_parsed": len(junit_files),
+        "summary": summary,
+        "failed_tests_by_sig": grouped_by_sig
+    }

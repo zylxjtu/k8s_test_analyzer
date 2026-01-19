@@ -109,6 +109,7 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 | `compare_build_logs` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | Find and compare last pass with first fail from cached builds |
 | `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
+| `get_test_failures` | Get parsed JUnit test failures with SIG/Feature grouping |
 
 ### Environment Variables
 
@@ -189,6 +190,7 @@ The CLI provides commands that mirror the MCP server tools, allowing you to test
 | `search` | Semantic search over indexed logs | `search_log` |
 | `compare` | Compare logs between two builds | `compare_build_logs` |
 | `find-regression` | Find and compare last pass with first fail | `find_regression` |
+| `failures` | Get parsed JUnit test failures | `get_test_failures` |
 | `reindex` | Re-index a specific project | `reindex_folder` |
 | `reindex-all` | Re-index all cached folders | `reindex_all` |
 | `index-stats` | Get indexing status for builds | `get_index_status` |
@@ -260,6 +262,12 @@ k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow
 
 # Find regression with more builds and custom filter
 k8s-test-analyzer find-regression --tab capz-windows-1-33-serial-slow --max-builds 20 --filter errors
+
+# Get parsed JUnit test failures grouped by SIG
+k8s-test-analyzer failures --tab capz-windows-1-33-serial-slow
+
+# Get failures for a specific build
+k8s-test-analyzer failures --tab capz-windows-1-33-serial-slow --build 1234567890
 
 # Re-index a specific project (required after schema changes)
 k8s-test-analyzer reindex ci-kubernetes-e2e-capz-1-33-windows-serial-slow

@@ -711,6 +711,71 @@ def cmd_find_regression(args):
     return _run_async(_find_regression())
 
 
+def cmd_failures(args):
+    """Get parsed JUnit test failures grouped by SIG (mirrors MCP get_test_failures tool)."""
+    async def _failures():
+        from local_indexing import initialize_chromadb
+        import core
+
+        await initialize_chromadb()
+
+        result = await core.get_test_failures(
+            tab=args.tab,
+            build_id=args.build,
+            dashboard=None
+        )
+
+        if "error" in result:
+            print(f"Error: {result['error']}", file=sys.stderr)
+            return 1
+
+        if args.format == 'json':
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            # Human-readable output
+            print(f"Tab: {result.get('tab')}")
+            print(f"Build: {result.get('build_id')}")
+            print(f"JUnit files parsed: {result.get('junit_files_parsed', 0)}")
+            print()
+
+            summary = result.get('summary', {})
+            print("Test Summary:")
+            print(f"  Total:   {summary.get('total_tests', 0)}")
+            print(f"  Passed:  {summary.get('passed', 0)}")
+            print(f"  Failed:  {summary.get('failed', 0)}")
+            print(f"  Errors:  {summary.get('errors', 0)}")
+            print(f"  Skipped: {summary.get('skipped', 0)}")
+            print(f"  Pass Rate: {summary.get('pass_rate', 0):.1f}%")
+            print()
+
+            failed_by_sig = result.get('failed_tests_by_sig', {})
+            if not failed_by_sig:
+                print("No failed tests!")
+                return 0
+
+            total_failures = sum(len(tests) for tests in failed_by_sig.values())
+            print(f"Failed Tests by SIG ({total_failures} total):")
+            print("-" * 80)
+            for sig, tests in sorted(failed_by_sig.items()):
+                print(f"\n[sig-{sig}] ({len(tests)} failures):")
+                for t in tests:
+                    name = t.get('name', '')
+                    print(f"\n  Test: {name}")
+
+                    # Show failure message or stack trace
+                    failure_msg = t.get('failure_message', '')
+                    stack_trace = t.get('stack_trace', '')
+
+                    if failure_msg:
+                        print(f"  Message: {failure_msg[:500]}")
+                    if stack_trace:
+                        print(f"  Stack trace:\n    {stack_trace[:1000].replace(chr(10), chr(10) + '    ')}")
+
+        return 0
+
+    return _run_async(_failures())
+
+
 def main():
     parser = argparse.ArgumentParser(description='Kubernetes CI Test Analyzer')
     parser.add_argument('-v', '--verbose', action='store_true')
@@ -814,6 +879,12 @@ def main():
     p.add_argument('--max-chunks', type=int, default=100, help='Max chunks per category per build (default: 100)')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
 
+    # failures (mirrors get_test_failures)
+    p = sub.add_parser('failures', help='Get parsed JUnit test failures grouped by SIG (MCP: get_test_failures)')
+    p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
+    p.add_argument('--build', '-b', help='Build ID (uses latest cached if not specified)')
+    p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
+
     args = parser.parse_args()
     
     if not args.command:
@@ -838,6 +909,7 @@ def main():
         'cleanup': cmd_cleanup,
         'compare': cmd_compare,
         'find-regression': cmd_find_regression,
+        'failures': cmd_failures,
     }
     return cmds[args.command](args)
 

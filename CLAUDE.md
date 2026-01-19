@@ -146,6 +146,7 @@ The MCP server exposes these tools (all mirror CLI commands). All tools use the 
 | `search_log` | `search` | Semantic search over indexed logs (filters by build_id, defaults to latest) |
 | `compare_build_logs` | `compare` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | `find-regression` | Find and compare last pass with first fail from cached builds |
+| `get_test_failures` | `failures` | Get parsed JUnit test failures with SIG/Feature grouping |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | `list-tabs` | List available tabs in the configured dashboard |
 | `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
@@ -198,6 +199,14 @@ The MCP server exposes these tools (all mirror CLI commands). All tools use the 
 3. The tool scans cached builds, finds the last passing and first failing build, and compares them
 4. Returns early if the most recent build is passing (no regression to investigate)
 5. If all cached builds are failing, download older builds to find the regression point
+
+### Analyzing Test Failures (JUnit Results)
+1. Download the build: `download_test(tab="capz-windows-1-33-serial-slow")`
+2. Get parsed failures grouped by SIG: `get_test_failures(tab="capz-windows-1-33-serial-slow")`
+
+The result includes:
+- Summary: total, passed, failed, errors, skipped, pass_rate
+- Failed tests grouped by SIG (Special Interest Group) with name, failure_message, status
 
 ## Dependencies
 
