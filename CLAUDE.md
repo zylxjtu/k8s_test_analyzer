@@ -137,12 +137,12 @@ Key environment variables (can be set in `.env` file):
 
 ## MCP Tools Available
 
-The MCP server exposes these tools (all mirror CLI commands). All tools use the dashboard configured via the `DEFAULT_DASHBOARD` environment variable.
+The MCP server exposes **read-only** tools. All tools use the dashboard configured via the `DEFAULT_DASHBOARD` environment variable.
+
+**Important:** MCP tools do NOT download or index data. Data must be downloaded via CLI (`download`, `download-all`) or the scheduled background task.
 
 | MCP Tool | CLI Command | Description |
 |----------|-------------|-------------|
-| `download_test` | `download` | Download and index test logs for a specific tab |
-| `download_all_latest` | `download-all` | Download and index all tabs from the configured dashboard |
 | `search_log` | `search` | Semantic search over indexed logs (filters by build_id, defaults to latest) |
 | `compare_build_logs` | `compare` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | `find-regression` | Find and compare last pass with first fail from cached builds |
@@ -151,9 +151,17 @@ The MCP server exposes these tools (all mirror CLI commands). All tools use the 
 | `list_dashboard_tabs` | `list-tabs` | List available tabs in the configured dashboard |
 | `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
 | `get_tab_status` | `status` | Get test results for latest build of each tab |
-| `reindex_folder` | `reindex` | Force re-index a specific project |
-| `reindex_all` | `reindex-all` | Force re-index all cached projects |
 | `get_index_status` | `index-stats` | Get indexing status (all tabs by default, or specific tab/build) |
+
+### CLI-Only Commands (Not Available via MCP)
+
+| CLI Command | Description |
+|-------------|-------------|
+| `download` | Download and index test logs for a specific tab |
+| `download-all` | Download and index all tabs from the configured dashboard |
+| `reindex` | Force re-index a specific project |
+| `reindex-all` | Force re-index all cached projects |
+| `cleanup` | Clean up old builds, keeping N most recent |
 
 ## Important Concepts
 

@@ -52,29 +52,6 @@ async def search_log(
 
 
 @mcp.tool(
-    name="download_test",
-    description="""Download Kubernetes CI test logs from TestGrid/GCS and index them for semantic search.
-    Downloads are cached - files already downloaded will be skipped.
-    Indexing is incremental - only new builds will be indexed, already indexed builds are skipped.
-    Use force_reindex=True to delete and re-index everything.
-    Args:
-        tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
-        build_id: Build ID (optional, fetches latest if not specified)
-        skip_indexing: Skip indexing after download (default: False)
-        force_reindex: Force delete collection and re-index all builds (default: False)
-    """
-)
-async def download_test(
-    tab: str,
-    build_id: str = None,
-    skip_indexing: bool = False,
-    force_reindex: bool = False
-) -> str:
-    result = await core.download_and_index(tab, None, build_id, skip_indexing, force_reindex)
-    return json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool(
     name="list_recent_builds",
     description="""List recent builds for a tab.
     Args:
@@ -122,27 +99,6 @@ async def get_tab_status(tabs: str = None) -> str:
 async def list_dashboard_tabs() -> str:
     result = core.list_tabs(None)
     return json.dumps(result, indent=2)
-
-
-@mcp.tool(
-    name="download_all_latest",
-    description="""Download and index test data for all tabs in the configured dashboard.
-    Downloads are cached - files already downloaded will be skipped.
-    Indexing is incremental - only new builds will be indexed, already indexed builds are skipped.
-    Use force_reindex=True to delete and re-index everything.
-    Args:
-        limit: Maximum tabs to fetch (optional)
-        skip_indexing: Skip indexing after download (default: False)
-        force_reindex: Force delete collections and re-index all builds (default: False)
-    """
-)
-async def download_all_latest(
-    limit: int = None,
-    skip_indexing: bool = False,
-    force_reindex: bool = False
-) -> str:
-    result = await core.download_all_and_index(None, limit, skip_indexing, force_reindex)
-    return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool(

@@ -97,10 +97,10 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 
 ### MCP Tools Available
 
+All MCP tools are **read-only** and do not trigger downloads or indexing. Data must be downloaded via CLI or the scheduled background task.
+
 | Tool | Description |
 |------|-------------|
-| `download_test` | Download test logs from TestGrid/GCS and index for semantic search |
-| `download_all_latest` | Download and index test data for all tabs in the configured dashboard |
 | `list_recent_builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | List tabs in the configured dashboard |
 | `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
@@ -110,6 +110,8 @@ For more options including workspace-level configuration, see the [VS Code MCP d
 | `find_regression` | Find and compare last pass with first fail from cached builds |
 | `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
 | `get_test_failures` | Get parsed JUnit test failures with SIG/Feature grouping |
+
+**Note:** To download and index new builds, use the CLI commands (`download`, `download-all`) or let the scheduled background task handle it automatically.
 
 ### Environment Variables
 
