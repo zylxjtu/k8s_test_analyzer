@@ -8,6 +8,7 @@ import os
 import logging
 import json
 import asyncio
+import yaml
 from fastmcp import FastMCP
 
 # Local imports
@@ -170,6 +171,10 @@ async def get_index_status(
     information grouped by SIG (Special Interest Group). Much more useful than raw
     log chunks for understanding what tests failed and why.
 
+    DEBUGGING TIP: This should be your FIRST tool when investigating test failures.
+    It gives you structured data showing exactly which tests failed, their error
+    messages, and stack traces - all organized by Kubernetes SIG ownership.
+
     Args:
         tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
         build_id: Build ID (optional, uses latest cached build if not specified)
@@ -274,6 +279,242 @@ async def find_regression(
     except Exception as e:
         logger.error(f"Error in find_regression: {str(e)}")
         return json.dumps({"error": str(e)})
+
+
+def _load_debugging_guides() -> dict:
+    """Load debugging guides from YAML file. Reads fresh on each call for live updates."""
+    import yaml
+    guides_file = os.path.join(os.path.dirname(__file__), "debugging_guides.yaml")
+
+    try:
+        with open(guides_file, 'r') as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load debugging_guides.yaml: {e}, using defaults")
+        return {
+            "overview": "# K8s Test Debugging Guide\n\nGuide file not found. Please create debugging_guides.yaml",
+            "failures": "# Debugging Test Failures\n\nGuide not available.",
+            "regression": "# Finding Regression Causes\n\nGuide not available.",
+            "flaky": "# Analyzing Flaky Tests\n\nGuide not available.",
+        }
+
+
+@mcp.tool(
+    name="get_debugging_guide",
+    description="""Get the K8s test debugging guide with workflows and common patterns.
+
+    Returns comprehensive debugging knowledge including:
+    - Step-by-step debugging workflows
+    - Common failure patterns and their causes
+    - Windows-specific troubleshooting tips
+    - Which tools to use for different scenarios
+    - Version info and changelog
+
+    The guide is loaded from debugging_guides.yaml and can be updated without restarting the server.
+
+    Call this tool when you need guidance on how to debug K8s test failures.
+    The guide will help you choose the right tools and interpret results.
+
+    Args:
+        topic: Optional topic ("failures", "regression", "flaky", "changelog", or None for full guide)
+    """
+)
+async def get_debugging_guide(topic: str = None) -> str:
+    """Return debugging guide as accumulated knowledge/skills. Loads fresh from file each time."""
+
+    # Load guides fresh each time (enables live updates without restart)
+    guides = _load_debugging_guides()
+
+    # Extract version info
+    version = guides.get("version", "unknown")
+    last_updated = guides.get("last_updated", "unknown")
+    version_header = f"**Debugging Guide v{version}** (Last updated: {last_updated})\n\n"
+
+    # Handle changelog request
+    if topic and topic.lower() == "changelog":
+        changelog = guides.get("changelog", "No changelog available.")
+        return version_header + changelog
+
+    # Handle specific topic request
+    if topic and topic.lower() in guides:
+        return version_header + guides[topic.lower()]
+
+    # Return full guide (overview + all sections)
+    sections = [version_header + guides.get("overview", "")]
+    for key in ["failures", "regression", "flaky"]:
+        if key in guides:
+            sections.append(guides[key])
+
+    return "\n\n---\n\n".join(sections)
+
+
+# ============== PROMPTS ==============
+# Guided workflows for K8s test troubleshooting
+# These provide step-by-step guidance and suggest tools to use
+
+@mcp.prompt(
+    name="debug_test_failure",
+    description="Systematic workflow to debug K8s test failures"
+)
+async def prompt_debug_test_failure(tab: str, build_id: str = None):
+    """Guide through debugging test failures step by step."""
+    build_info = f"build `{build_id}`" if build_id else "the latest build"
+
+    return f"""# Debug Test Failures: {tab}
+
+I'll guide you through debugging test failures for **{tab}** ({build_info}).
+
+## Step 1: Understand What Failed
+Use the `get_test_failures` tool to see structured failure information:
+- Failures are grouped by SIG (Special Interest Group)
+- Each failure includes the test name, error message, and stack trace
+
+## Step 2: Search for Error Details
+Use `search_log` to find more context. Good search patterns:
+- `"panic"` or `"fatal"` - For crashes
+- `"timeout"` or `"timed out"` - For timing issues
+- `"failed to"` - For specific operation failures
+- The exact test name from Step 1
+
+## Step 3: Compare with Passing Build
+If you have a known-good build, use `compare_build_logs` to see what changed.
+Or use `find_regression` to automatically find the last passing build.
+
+## Common K8s Test Failure Patterns
+
+| Pattern | Likely Cause | What to Check |
+|---------|--------------|---------------|
+| `timeout waiting for pod` | Slow provisioning | Node resources, image pull time |
+| `connection refused` | Service not ready | Pod status, network policies |
+| `context deadline exceeded` | Operation too slow | Cluster load, API server health |
+| `permission denied` | RBAC or security | ServiceAccount, PodSecurityPolicy |
+| `ImagePullBackOff` | Registry issues | Image name, credentials, network |
+
+## Windows-Specific Issues
+- HNS networking failures -> Check Windows node logs
+- Container runtime errors -> Verify containerd/Docker version
+- Path issues -> Windows vs Linux path separators
+
+---
+Ready to start? I recommend beginning with `get_test_failures` for tab `{tab}`.
+"""
+
+
+@mcp.prompt(
+    name="find_regression_cause",
+    description="Identify what change caused tests to start failing"
+)
+async def prompt_find_regression_cause(tab: str):
+    """Guide through regression analysis workflow."""
+    return f"""# Find Regression Cause: {tab}
+
+I'll help you identify what change caused tests to start failing for **{tab}**.
+
+## Step 1: Find the Regression Point
+Use `find_regression` tool with tab="{tab}" to:
+- Scan cached builds to find the pass->fail transition
+- Identify the last passing build and first failing build
+- Compare the two builds automatically
+
+## Step 2: Analyze the Comparison
+Look for these key differences in the comparison output:
+
+### Version Changes
+- Kubernetes version bumps
+- Container runtime version changes
+- Test image version updates
+- Dependency updates
+
+### New Error Messages
+- Errors that appear in the failing build but not in passing
+- Stack traces with new failure modes
+
+### Configuration Differences
+- Changed test parameters
+- Different cluster configurations
+- Modified resource limits
+
+## Step 3: Cross-Reference
+Once you identify suspicious changes:
+1. Check Kubernetes release notes for breaking changes
+2. Look at recent PRs merged around the regression time
+3. Search for related issues in kubernetes/kubernetes
+
+## Common Regression Causes
+
+| Category | Examples |
+|----------|----------|
+| API Changes | Deprecated APIs removed, new required fields |
+| Behavior Changes | Timing changes, default value changes |
+| Security | New restrictions, RBAC requirements |
+| Dependencies | Incompatible versions, removed features |
+
+---
+Start with `find_regression` to locate the regression point.
+"""
+
+
+@mcp.prompt(
+    name="analyze_flaky_test",
+    description="Investigate intermittent test failures"
+)
+async def prompt_analyze_flaky_test(tab: str, test_name: str = None):
+    """Guide through flaky test analysis."""
+    test_info = f"test `{test_name}`" if test_name else "flaky tests"
+
+    return f"""# Analyze Flaky Test: {tab}
+
+I'll help you investigate {test_info} in **{tab}**.
+
+## Step 1: Gather Build History
+Use `list_recent_builds` to see recent builds and their pass/fail status.
+Look for patterns:
+- Does it fail at specific times?
+- Does it fail in clusters?
+- What's the failure rate?
+
+## Step 2: Compare Passing vs Failing Runs
+Use `search_log` to search for the test name across multiple builds:
+- Search in a passing build
+- Search in a failing build
+- Compare the output differences
+
+## Step 3: Identify Flakiness Patterns
+
+### Timing-Related
+- `timeout` or `deadline exceeded` -> Test assumes faster execution
+- Race conditions -> Order-dependent assertions
+- Resource cleanup -> Previous test artifacts interfering
+
+### Resource-Related
+- Memory pressure -> OOM kills, slow garbage collection
+- CPU throttling -> Timeouts under load
+- Disk I/O -> Slow writes affecting test assertions
+
+### Environment-Related
+- Network variability -> Connection timeouts, DNS issues
+- Node conditions -> Taints, resource availability
+- External dependencies -> APIs, registries
+
+## Common Flaky Test Fixes
+
+| Pattern | Solution |
+|---------|----------|
+| Timeout too short | Increase timeout or use Eventually() |
+| Race condition | Add proper synchronization |
+| Resource leak | Ensure cleanup in AfterEach |
+| Hard-coded delays | Use polling with timeout instead |
+| Shared state | Isolate test namespaces |
+
+## Windows-Specific Flakiness
+- Container startup time -> Windows containers are slower to start
+- HNS networking -> Occasional network initialization delays
+- File locking -> Windows file handles held longer
+
+---
+Start by using `list_recent_builds` to see the recent history for `{tab}`.
+{f'Then search for `{test_name}` to see where it fails.' if test_name else ''}
+"""
 
 
 # Default schedule interval in seconds (1 hour)

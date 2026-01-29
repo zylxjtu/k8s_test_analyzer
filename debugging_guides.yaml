@@ -1,0 +1,141 @@
+# K8s Test Debugging Guides
+# Edit this file to add new patterns - changes take effect immediately (no server restart needed)
+
+version: "1.0.0"
+last_updated: "2025-01-29"
+changelog: |
+  ## Version 1.0.0 (2025-01-29)
+  - Initial release with failure, regression, and flaky test guides
+  - Common K8s test failure patterns
+  - Windows-specific troubleshooting tips
+
+failures: |
+  # Debugging Test Failures
+
+  ## Recommended Workflow
+  1. **Start with `get_test_failures`** - See structured failures grouped by SIG
+  2. **Use `search_log`** - Search for error patterns in logs
+  3. **Compare builds** - Use `compare_build_logs` or `find_regression`
+
+  ## Common K8s Test Failure Patterns
+
+  | Pattern | Likely Cause | What to Check |
+  |---------|--------------|---------------|
+  | `timeout waiting for pod` | Slow provisioning | Node resources, image pull time |
+  | `connection refused` | Service not ready | Pod status, network policies |
+  | `context deadline exceeded` | Operation too slow | Cluster load, API server health |
+  | `permission denied` | RBAC or security | ServiceAccount, PodSecurityPolicy |
+  | `ImagePullBackOff` | Registry issues | Image name, credentials, network |
+  | `OOMKilled` | Memory limit exceeded | Resource limits, memory leaks |
+  | `CrashLoopBackOff` | Container crashes | Application logs, liveness probes |
+
+  ## Windows-Specific Issues
+  - **HNS networking failures** - Check Windows node logs for HNS errors
+  - **Container runtime errors** - Verify containerd/Docker version compatibility
+  - **Path issues** - Windows vs Linux path separators (backslash vs forward slash)
+  - **Slow container startup** - Windows containers take longer to start than Linux
+  - **File locking** - Windows holds file handles longer than Linux
+
+regression: |
+  # Finding Regression Causes
+
+  ## Recommended Workflow
+  1. **Use `find_regression`** - Automatically finds pass->fail transition
+  2. **Analyze the comparison** - Look for version changes, new errors
+  3. **Cross-reference** - Check K8s release notes, recent PRs
+
+  ## What to Look For in Comparison Output
+
+  ### Version Changes
+  - Kubernetes version bumps (check release notes for breaking changes)
+  - Container runtime version changes
+  - Test image version updates
+  - Dependency updates in go.mod
+
+  ### New Error Messages
+  - Errors present in failing build but not in passing
+  - New stack traces or panic messages
+  - Changed error codes or status conditions
+
+  ### Configuration Differences
+  - Changed test parameters or timeouts
+  - Different cluster configurations
+  - Modified resource limits or quotas
+
+  ## Common Regression Causes
+
+  | Category | Examples |
+  |----------|----------|
+  | API Changes | Deprecated APIs removed, new required fields |
+  | Behavior Changes | Timing changes, default value changes |
+  | Security | New restrictions, RBAC requirements |
+  | Dependencies | Incompatible versions, removed features |
+
+flaky: |
+  # Analyzing Flaky Tests
+
+  ## Recommended Workflow
+  1. **Use `list_recent_builds`** - See pass/fail pattern over time
+  2. **Use `search_log` across builds** - Search for the test name in passing vs failing
+  3. **Identify patterns** - Timing, resources, or environment related
+
+  ## Flakiness Patterns
+
+  ### Timing-Related
+  - `timeout` or `deadline exceeded` - Test assumes faster execution
+  - Race conditions - Order-dependent assertions
+  - Slow cleanup - Previous test artifacts interfering
+
+  ### Resource-Related
+  - Memory pressure - OOM kills, slow garbage collection
+  - CPU throttling - Timeouts under load
+  - Disk I/O - Slow writes affecting assertions
+
+  ### Environment-Related
+  - Network variability - Connection timeouts, DNS issues
+  - Node conditions - Taints, resource availability
+  - External dependencies - Flaky APIs, registries
+
+  ## Common Fixes
+
+  | Pattern | Solution |
+  |---------|----------|
+  | Timeout too short | Increase timeout, use Eventually() with polling |
+  | Race condition | Add proper synchronization, use channels |
+  | Resource leak | Ensure cleanup in AfterEach/DeferCleanup |
+  | Hard-coded delays | Use polling with timeout instead of Sleep |
+  | Shared state | Isolate test namespaces, use unique names |
+
+overview: |
+  # K8s Test Debugging Guide
+
+  This guide helps you debug Kubernetes test failures using the available MCP tools.
+
+  ## Quick Reference: Which Tool to Use
+
+  | Scenario | Tool to Use |
+  |----------|-------------|
+  | What tests failed? | `get_test_failures` |
+  | Search for error patterns | `search_log` |
+  | When did it start failing? | `find_regression` |
+  | Compare two builds | `compare_build_logs` |
+  | Check dashboard health | `get_testgrid_summary` |
+  | List available tabs | `list_dashboard_tabs` |
+  | See recent builds | `list_recent_builds` |
+
+  ## Debugging Workflows
+
+  ### 1. New Test Failure
+  ```
+  get_test_failures -> search_log -> find_regression
+  ```
+
+  ### 2. Investigating Regression
+  ```
+  find_regression -> analyze comparison -> check release notes
+  ```
+
+  ### 3. Flaky Test
+  ```
+  list_recent_builds -> search_log (multiple builds) -> identify pattern
+  ```

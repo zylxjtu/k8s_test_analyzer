@@ -11,6 +11,7 @@ services:
     volumes:
       - ${PROJECTS_ROOT}:/projects
       - ${PROJECTS_ROOT}/container_cache:/app/.cache  # Cache folder (works for both root and non-root)
+      - ./debugging_guides.yaml:/app/debugging_guides.yaml:ro  # Live-updatable debugging guides
     environment:
       - HOME=/app  # Set HOME for cache directory to work with any user
       - FASTMCP_PORT=${FASTMCP_PORT:-8978}
