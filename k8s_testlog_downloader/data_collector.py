@@ -147,6 +147,13 @@ class DataCollector:
                 return f"ci-kubernetes-e2e-capz-{branch}-windows-{suffix}"
             return f"ci-kubernetes-e2e-capz-{branch}-windows"
 
+        # Handle tabs like "capz-windows-containerd-nightly-master"
+        # -> "ci-kubernetes-e2e-capz-master-containerd-nightly-windows"
+        match = re.match(r'capz-windows-containerd-nightly-(master|main)$', tab)
+        if match:
+            branch = match.group(1)
+            return f"ci-kubernetes-e2e-capz-{branch}-containerd-nightly-windows"
+
         return f"ci-kubernetes-e2e-{tab}"
     
     def _parse_build_info(self, downloaded: dict[str, Path]) -> dict:
