@@ -1412,3 +1412,230 @@ async def get_test_failures(
         "summary": summary,
         "failed_tests_by_sig": grouped_by_sig
     }
+
+
+def _extract_node_info(file_path: str) -> str:
+    """Extract node name from common path patterns in K8s CI logs.
+
+    Args:
+        file_path: Relative path to the log file
+
+    Returns:
+        Node name if found, None otherwise
+    """
+    import re
+
+    # Common patterns for node identification in K8s CI logs
+    patterns = [
+        # clusters/<cluster>/nodes/<node>/...
+        r'clusters/[^/]+/nodes/([^/]+)/',
+        # clusters/<cluster>/<component>/<pod-name>/...  (extract pod name as identifier)
+        r'clusters/[^/]+/[^/]+/([^/]+)/',
+        # artifacts/logs/<node>/...
+        r'artifacts/logs/([^/]+)/',
+        # node-<name>/...
+        r'node-([^/]+)/',
+        # <something>-logs/<identifier>/...
+        r'[^/]+-logs/([^/]+)/',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, file_path)
+        if match:
+            return match.group(1)
+    return None
+
+
+async def list_log_files(
+    tab: str,
+    build_id: str,  # Required - must specify which build to list files from
+    pattern: str = None,
+    dashboard: str = None
+) -> dict:
+    """
+    List log files available in a cached build.
+
+    Returns file metadata (path, node, size) without content. Use this to discover
+    what files exist, then call get_log_file with a specific filename to retrieve content.
+
+    Args:
+        tab: TestGrid tab name
+        build_id: Build ID (REQUIRED - must specify which build to list)
+        pattern: Optional glob pattern to filter files (e.g., "*.log", "kubelet*")
+        dashboard: Dashboard name (uses DEFAULT_DASHBOARD if not specified)
+
+    Returns:
+        dict with:
+        - tab: the tab searched
+        - build_id: the build searched
+        - pattern: the pattern used (if any)
+        - total_files: count of matching files
+        - files: list of {path, node, size_bytes}
+    """
+    import fnmatch
+
+    if not build_id:
+        return {"error": "build_id is required - specify which build to list files from"}
+
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+
+    # Resolve job name from tab
+    job_name = c._get_gcs_job_name(dashboard, tab)
+    if not job_name:
+        return {"error": f"Could not resolve job name for tab '{tab}' in dashboard '{dashboard}'"}
+
+    config = get_config()
+    job_path = Path(config["projects_root"]) / job_name
+
+    # Validate build exists
+    build_path = job_path / build_id
+    if not build_path.exists():
+        return {"error": f"Build {build_id} not found in cache for job {job_name}. Download it first."}
+
+    # Find matching files
+    matching_files = []
+
+    # Walk through the build directory
+    for root, dirs, files in os.walk(build_path):
+        for file in files:
+            abs_path = Path(root) / file
+            rel_path = abs_path.relative_to(build_path)
+            rel_path_str = str(rel_path)
+
+            # Check if file matches pattern (if specified)
+            if pattern:
+                # Match against filename only or full relative path
+                if not (fnmatch.fnmatch(file, pattern) or fnmatch.fnmatch(rel_path_str, f"**/{pattern}")):
+                    continue
+
+            # Get file size
+            try:
+                size_bytes = abs_path.stat().st_size
+            except OSError:
+                size_bytes = 0
+
+            # Extract node info from path
+            node = _extract_node_info(rel_path_str)
+
+            matching_files.append({
+                "path": rel_path_str,
+                "node": node,
+                "size_bytes": size_bytes
+            })
+
+    # Sort by path for consistent output
+    matching_files.sort(key=lambda x: x["path"])
+
+    return {
+        "tab": tab,
+        "build_id": build_id,
+        "pattern": pattern,
+        "total_files": len(matching_files),
+        "files": matching_files
+    }
+
+
+async def get_log_file(
+    tab: str,
+    build_id: str,  # Required - must specify which build to read from
+    filename: str,  # Required - exact file path or filename to read
+    node: str = None,  # Optional - filter by node name when multiple files exist
+    dashboard: str = None
+) -> dict:
+    """
+    Get log file content from a cached build.
+
+    Retrieves the full content of a specific log file. Use list_log_files first
+    to discover available files, then call this with the exact filename.
+
+    NOTE: Both tab and build_id are required because this is a "drill-down" tool
+    used after you've already identified a specific build to investigate.
+
+    Args:
+        tab: TestGrid tab name
+        build_id: Build ID (REQUIRED - must specify which build to read from)
+        filename: File path or name to read (REQUIRED - e.g., "build-log.txt" or
+                  "artifacts/clusters/bootstrap/nodes/capz-mp-0/kubelet.log")
+        node: Node name to filter by (optional - use when same filename exists
+              for multiple nodes, e.g., "capz-mp-0" to get that node's kubelet.log)
+        dashboard: Dashboard name (uses DEFAULT_DASHBOARD if not specified)
+
+    Returns:
+        dict with:
+        - tab: the tab
+        - build_id: the build
+        - file: {path, node, size_bytes, content}
+    """
+    if not build_id:
+        return {"error": "build_id is required - specify which build to read from"}
+
+    if not filename:
+        return {"error": "filename is required - specify which file to read"}
+
+    c = get_collector()
+    dashboard = dashboard or get_default_dashboard()
+
+    # Resolve job name from tab
+    job_name = c._get_gcs_job_name(dashboard, tab)
+    if not job_name:
+        return {"error": f"Could not resolve job name for tab '{tab}' in dashboard '{dashboard}'"}
+
+    config = get_config()
+    job_path = Path(config["projects_root"]) / job_name
+
+    # Validate build exists
+    build_path = job_path / build_id
+    if not build_path.exists():
+        return {"error": f"Build {build_id} not found in cache for job {job_name}. Download it first."}
+
+    # If node is specified, search for the file matching both filename and node
+    if node:
+        import os
+        base_filename = Path(filename).name  # Get just the filename part
+        matching_files = []
+
+        for root, dirs, files in os.walk(build_path):
+            for file in files:
+                if file == base_filename:
+                    abs_path = Path(root) / file
+                    rel_path = abs_path.relative_to(build_path)
+                    rel_path_str = str(rel_path)
+                    file_node = _extract_node_info(rel_path_str)
+                    if file_node == node:
+                        matching_files.append((abs_path, rel_path_str, file_node))
+
+        if not matching_files:
+            return {"error": f"File '{filename}' for node '{node}' not found in build {build_id}"}
+
+        if len(matching_files) > 1:
+            paths = [f[1] for f in matching_files]
+            return {"error": f"Multiple files match '{filename}' for node '{node}': {paths}. Use full path."}
+
+        file_path, rel_path_str, file_node = matching_files[0]
+    else:
+        # Direct path lookup
+        file_path = build_path / filename
+        if not file_path.exists():
+            return {"error": f"File '{filename}' not found in build {build_id}"}
+        rel_path_str = filename
+        file_node = _extract_node_info(filename)
+
+    # Read file content
+    try:
+        size_bytes = file_path.stat().st_size
+        with open(file_path, 'r', errors='replace') as f:
+            content = f.read()
+
+        return {
+            "tab": tab,
+            "build_id": build_id,
+            "file": {
+                "path": rel_path_str,
+                "node": file_node,
+                "size_bytes": size_bytes,
+                "content": content
+            }
+        }
+    except Exception as e:
+        return {"error": f"Failed to read file '{filename}': {e}"}

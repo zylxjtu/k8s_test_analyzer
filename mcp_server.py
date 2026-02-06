@@ -197,6 +197,78 @@ async def get_test_failures(
 
 
 @mcp.tool(
+    name="list_log_files",
+    description="""List log files available in a cached build.
+
+    Returns file metadata (path, node, size) without content. Use this to discover
+    what files exist, then call get_log_file with a specific filename to retrieve content.
+
+    NOTE: Both tab and build_id are required.
+
+    Args:
+        tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
+        build_id: Build ID (REQUIRED - specify which build to list files from)
+        pattern: Optional glob pattern to filter files (e.g., "*.log", "kubelet*")
+    """
+)
+async def list_log_files(
+    tab: str,
+    build_id: str,  # Required
+    pattern: str = None
+) -> str:
+    try:
+        result = await core.list_log_files(
+            tab=tab,
+            build_id=build_id,
+            pattern=pattern,
+            dashboard=None
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"Error in list_log_files: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool(
+    name="get_log_file",
+    description="""Get log file content from a cached build.
+
+    Retrieves the full content of a specific log file. Use list_log_files first
+    to discover available files, then call this with the exact filename.
+
+    NOTE: tab, build_id, and filename are required. This is a "drill-down" tool
+    used after you've identified a specific build and file to examine.
+
+    Args:
+        tab: TestGrid tab name (e.g., "capz-windows-1-33-serial-slow")
+        build_id: Build ID (REQUIRED - specify which build to read from)
+        filename: File path or name (REQUIRED - e.g., "build-log.txt" or
+                  "artifacts/clusters/bootstrap/nodes/capz-mp-0/kubelet.log")
+        node: Node name to filter by (optional - use when same filename exists
+              for multiple nodes, e.g., "capz-mp-0" to get that node's kubelet.log)
+    """
+)
+async def get_log_file(
+    tab: str,
+    build_id: str,  # Required
+    filename: str,  # Required
+    node: str = None  # Optional - filter by node
+) -> str:
+    try:
+        result = await core.get_log_file(
+            tab=tab,
+            build_id=build_id,
+            filename=filename,
+            node=node,
+            dashboard=None
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"Error in get_log_file: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool(
     name="compare_build_logs",
     description="""Compare logs between two Kubernetes CI builds.
 

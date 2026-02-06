@@ -776,6 +776,91 @@ def cmd_failures(args):
     return _run_async(_failures())
 
 
+def cmd_list_logs(args):
+    """List log files in a cached build (mirrors MCP list_log_files tool)."""
+    async def _list_logs():
+        from local_indexing import initialize_chromadb
+        import core
+
+        await initialize_chromadb()
+
+        result = await core.list_log_files(
+            tab=args.tab,
+            build_id=args.build,
+            pattern=args.pattern,
+            dashboard=None
+        )
+
+        if "error" in result:
+            print(f"Error: {result['error']}", file=sys.stderr)
+            return 1
+
+        if args.format == 'json':
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            # Human-readable output
+            print(f"Tab: {result.get('tab')}")
+            print(f"Build: {result.get('build_id')}")
+            if result.get('pattern'):
+                print(f"Pattern: {result.get('pattern')}")
+            print(f"Total files: {result.get('total_files', 0)}")
+            print()
+
+            files = result.get('files', [])
+            if not files:
+                print("No files found")
+                return 0
+
+            # Print files in a table-like format
+            for f in files:
+                size_kb = f.get('size_bytes', 0) / 1024
+                node = f.get('node') or '-'
+                print(f"{size_kb:>8.1f} KB  {node:<30}  {f.get('path')}")
+
+        return 0
+
+    return _run_async(_list_logs())
+
+
+def cmd_get_log(args):
+    """Get log file content from a cached build (mirrors MCP get_log_file tool)."""
+    async def _get_log():
+        from local_indexing import initialize_chromadb
+        import core
+
+        await initialize_chromadb()
+
+        result = await core.get_log_file(
+            tab=args.tab,
+            build_id=args.build,
+            filename=args.filename,
+            node=getattr(args, 'node', None),
+            dashboard=None
+        )
+
+        if "error" in result:
+            print(f"Error: {result['error']}", file=sys.stderr)
+            return 1
+
+        if args.format == 'json':
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            # Human-readable output
+            f = result.get('file', {})
+            print(f"Tab: {result.get('tab')}")
+            print(f"Build: {result.get('build_id')}")
+            print(f"File: {f.get('path')}")
+            if f.get('node'):
+                print(f"Node: {f.get('node')}")
+            print(f"Size: {f.get('size_bytes', 0) / 1024:.1f} KB")
+            print("-" * 40)
+            print(f.get('content', ''))
+
+        return 0
+
+    return _run_async(_get_log())
+
+
 def main():
     parser = argparse.ArgumentParser(description='Kubernetes CI Test Analyzer')
     parser.add_argument('-v', '--verbose', action='store_true')
@@ -885,6 +970,23 @@ def main():
     p.add_argument('--build', '-b', help='Build ID (uses latest cached if not specified)')
     p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
 
+    # list-logs (mirrors list_log_files)
+    # NOTE: --build is required - this is a drill-down tool used after identifying a specific build
+    p = sub.add_parser('list-logs', help='List log files in a cached build (MCP: list_log_files)')
+    p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
+    p.add_argument('--build', '-b', required=True, help='Build ID (required - specify which build to list)')
+    p.add_argument('--pattern', '-p', help='Optional glob pattern to filter files (e.g., "*.log", "kubelet*")')
+    p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
+
+    # get-log (mirrors get_log_file)
+    # NOTE: tab, build_id, filename required - use list-logs first to discover files
+    p = sub.add_parser('get-log', help='Get log file content from a cached build (MCP: get_log_file)')
+    p.add_argument('--tab', '-t', required=True, help='TestGrid tab name')
+    p.add_argument('--build', '-b', required=True, help='Build ID (required)')
+    p.add_argument('--filename', '-n', required=True, help='File path or name (required - e.g., "build-log.txt")')
+    p.add_argument('--node', help='Node name to filter by (optional - e.g., "capz-mp-0")')
+    p.add_argument('--format', '-f', choices=['text', 'json'], default='text')
+
     args = parser.parse_args()
     
     if not args.command:
@@ -910,6 +1012,8 @@ def main():
         'compare': cmd_compare,
         'find-regression': cmd_find_regression,
         'failures': cmd_failures,
+        'list-logs': cmd_list_logs,
+        'get-log': cmd_get_log,
     }
     return cmds[args.command](args)
 

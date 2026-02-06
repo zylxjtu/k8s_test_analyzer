@@ -110,6 +110,8 @@ All MCP tools are **read-only** and do not trigger downloads or indexing. Data m
 | `find_regression` | Find and compare last pass with first fail from cached builds |
 | `get_index_status` | Get indexing status (all tabs, specific tab, or specific build) |
 | `get_test_failures` | Get parsed JUnit test failures with SIG/Feature grouping |
+| `list_log_files` | List log files in a build (requires tab and build_id) |
+| `get_log_file` | Get specific log file content (requires tab, build_id, and filename) |
 
 **Note:** To download and index new builds, use the CLI commands (`download`, `download-all`) or let the scheduled background task handle it automatically.
 
@@ -193,6 +195,8 @@ The CLI provides commands that mirror the MCP server tools, allowing you to test
 | `compare` | Compare logs between two builds | `compare_build_logs` |
 | `find-regression` | Find and compare last pass with first fail | `find_regression` |
 | `failures` | Get parsed JUnit test failures | `get_test_failures` |
+| `list-logs` | List log files in a build | `list_log_files` |
+| `get-log` | Get specific log file content | `get_log_file` |
 | `reindex` | Re-index a specific project | `reindex_folder` |
 | `reindex-all` | Re-index all cached folders | `reindex_all` |
 | `index-stats` | Get indexing status for builds | `get_index_status` |

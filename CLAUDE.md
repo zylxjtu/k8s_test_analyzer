@@ -147,6 +147,8 @@ The MCP server exposes **read-only** tools. All tools use the dashboard configur
 | `compare_build_logs` | `compare` | Compare logs between two builds (same-job or cross-job) |
 | `find_regression` | `find-regression` | Find and compare last pass with first fail from cached builds |
 | `get_test_failures` | `failures` | Get parsed JUnit test failures with SIG/Feature grouping |
+| `list_log_files` | `list-logs` | List log files in a build (requires tab and build_id) |
+| `get_log_file` | `get-log` | Get specific log file content (requires tab, build_id, and filename) |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | `list-tabs` | List available tabs in the configured dashboard |
 | `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
@@ -215,6 +217,25 @@ The MCP server exposes **read-only** tools. All tools use the dashboard configur
 The result includes:
 - Summary: total, passed, failed, errors, skipped, pass_rate
 - Failed tests grouped by SIG (Special Interest Group) with name, failure_message, status
+
+### Drilling Down into Raw Log Files
+After identifying a specific build to investigate (via search, failures, or comparison), use `list_log_files` to discover available files, then `get_log_file` to retrieve content:
+
+```bash
+# Step 1: List available log files
+k8s-test-analyzer list-logs --tab capz-windows-1-33-serial-slow --build 2015487726970736640
+
+# Step 1 (with pattern): List only .log files
+k8s-test-analyzer list-logs --tab capz-windows-1-33-serial-slow --build 2015487726970736640 --pattern "*.log"
+
+# Step 2: Get a specific file's content
+k8s-test-analyzer get-log --tab capz-windows-1-33-serial-slow --build 2015487726970736640 --filename build-log.txt
+
+# Get a nested file (use full path from list-logs output)
+k8s-test-analyzer get-log --tab capz-windows-1-33-serial-slow --build 2015487726970736640 --filename "artifacts/clusters/bootstrap/nodes/capz-mp-0/kubelet.log"
+```
+
+**Note:** All parameters are required for these drill-down tools. Use `list_log_files` first to see available files and their paths.
 
 ## Dependencies
 
