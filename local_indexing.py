@@ -522,10 +522,16 @@ def process_and_index_documents(
                 texts.append(node.text)
                 metadatas.append(metadata)
 
+            # Pre-compute embeddings to avoid ChromaDB 1.x internally
+            # reconstructing the ONNX embedding function from stored config,
+            # which triggers "Artifact of type=precompile already registered" error.
+            embeddings = embedding_function(texts)
+
             # Add nodes to ChromaDB collection
             collection.upsert(
                 ids=ids,
                 documents=texts,
+                embeddings=embeddings,
                 metadatas=metadatas
             )
 
@@ -663,9 +669,11 @@ def _mark_build_completed(collection_name: str, build_id: str) -> bool:
             completed_builds.add(str(build_id))
 
             # Update the marker document (upsert)
+            marker_text = ["Completion marker - do not delete"]
             collection.upsert(
                 ids=[marker_id],
-                documents=["Completion marker - do not delete"],
+                documents=marker_text,
+                embeddings=embedding_function(marker_text),
                 metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
                            "is_marker": True}]
             )
@@ -709,9 +717,11 @@ def _unmark_build_completed(collection_name: str, build_id: str) -> bool:
 
             if completed_builds:
                 # Update the marker document
+                marker_text = ["Completion marker - do not delete"]
                 collection.upsert(
                     ids=[marker_id],
-                    documents=["Completion marker - do not delete"],
+                    documents=marker_text,
+                    embeddings=embedding_function(marker_text),
                     metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
                                "is_marker": True}]
                 )
