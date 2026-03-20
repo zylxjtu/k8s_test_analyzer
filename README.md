@@ -103,7 +103,6 @@ All MCP tools are **read-only** and do not trigger downloads or indexing. Data m
 |------|-------------|
 | `list_recent_builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | List tabs in the configured dashboard |
-| `get_testgrid_summary` | Get dashboard summary (passing/failing/flaky from TestGrid) |
 | `get_tab_status` | Get test results for latest build of tabs specified |
 | `search_log` | Semantic search over indexed logs (filters by build_id, defaults to latest) |
 | `compare_build_logs` | Compare logs between two builds (same-job or cross-job) |

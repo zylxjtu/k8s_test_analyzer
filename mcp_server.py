@@ -65,17 +65,6 @@ async def list_recent_builds(tab: str, limit: int = 10) -> str:
     return json.dumps(result, indent=2, default=str)
 
 
-@mcp.tool(
-    name="get_testgrid_summary",
-    description="""Get TestGrid dashboard summary.
-    Args:
-        tab: Tab name (optional, returns full dashboard summary if not specified)
-    """
-)
-async def get_testgrid_summary(tab: str = None) -> str:
-    result = core.get_testgrid_summary(None, tab)
-    return json.dumps(result, indent=2, default=str)
-
 
 @mcp.tool(
     name="get_tab_status",

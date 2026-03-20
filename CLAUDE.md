@@ -151,7 +151,6 @@ The MCP server exposes **read-only** tools. All tools use the dashboard configur
 | `get_log_file` | `get-log` | Get specific log file content (requires tab, build_id, and filename) |
 | `list_recent_builds` | `list-builds` | List recent builds for a tab |
 | `list_dashboard_tabs` | `list-tabs` | List available tabs in the configured dashboard |
-| `get_testgrid_summary` | `summary` | Get dashboard health summary (passing/failing/flaky) |
 | `get_tab_status` | `status` | Get test results for latest build of each tab |
 | `get_index_status` | `index-stats` | Get indexing status (all tabs by default, or specific tab/build) |
 
@@ -178,9 +177,8 @@ The MCP server exposes **read-only** tools. All tools use the dashboard configur
 - **Indexing**: Projects are indexed once by default. Use `force_reindex=True` to re-index.
 - **Search Scope**: Searches are scoped to a specific tab/project. You must specify which tab's logs to search.
 
-### TestGrid vs Test Results
-- **TestGrid Summary** (`get_testgrid_summary`): Fast, uses TestGrid's aggregated status (PASSING/FAILING/FLAKY)
-- **Tab Status** (`get_tab_status`): Slower, downloads actual test results and counts pass/fail
+### Test Results
+- **Tab Status** (`get_tab_status`): Downloads actual test results and counts pass/fail for each tab
 
 ## Common Tasks
 
@@ -191,8 +189,7 @@ The MCP server exposes **read-only** tools. All tools use the dashboard configur
 4. Review search results for relevant log sections
 
 ### Monitoring Dashboard Health
-1. Get quick status: `get_testgrid_summary()` (uses DEFAULT_DASHBOARD from env)
-2. For detailed results: `get_tab_status()` or `get_tab_status(tabs="specific-tab")`
+1. Get status: `get_tab_status()` or `get_tab_status(tabs="specific-tab")`
 
 ### Investigating Flaky Tests
 1. Download multiple builds: Use `download_test()` with different `build_id` parameters
