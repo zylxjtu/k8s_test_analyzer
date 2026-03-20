@@ -1,9 +1,12 @@
 # K8s Test Debugging Guides
 # Edit this file to add new patterns - changes take effect immediately (no server restart needed)
 
-version: "1.0.0"
-last_updated: "2025-01-29"
+version: "1.1.0"
+last_updated: "2026-03-20"
 changelog: |
+  ## Version 1.1.0 (2026-03-20)
+  - Removed `get_testgrid_summary` tool; use `get_tab_status` for dashboard health instead
+
   ## Version 1.0.0 (2025-01-29)
   - Initial release with failure, regression, and flaky test guides
   - Common K8s test failure patterns
@@ -119,7 +122,7 @@ overview: |
   | Search for error patterns | `search_log` |
   | When did it start failing? | `find_regression` |
   | Compare two builds | `compare_build_logs` |
-  | Check dashboard health | `get_testgrid_summary` |
+  | Check dashboard health | `get_tab_status` |
   | List available tabs | `list_dashboard_tabs` |
   | See recent builds | `list_recent_builds` |
 
