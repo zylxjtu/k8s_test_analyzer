@@ -520,8 +520,8 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
         filter_tabs = [t.strip() for t in tabs.split(',')]
         all_tabs = [t for t in all_tabs if t in filter_tabs]
     
-    results = []
-    for tab in all_tabs:
+    def _get_tab_result(tab):
+        """Fetch status for a single tab (runs in thread pool)."""
         try:
             data = c.collect_from_tab(tab, dashboard=dashboard)
             build_id = data.get('build_id', 'unknown')
@@ -530,14 +530,14 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
             passed = test_results.get('passed', 0)
             skipped = test_results.get('skipped', 0)
             total = test_results.get('total', 0)
-            
+
             # PASS only if: no failures AND at least one test ran
             if failed == 0 and total > 0:
                 status = 'PASS'
             else:
                 status = 'FAIL'
-            
-            results.append({
+
+            return {
                 'tab': tab,
                 'build_id': build_id,
                 'passed': passed,
@@ -546,9 +546,9 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
                 'total': total,
                 'status': status,
                 'error': None
-            })
+            }
         except Exception as e:
-            results.append({
+            return {
                 'tab': tab,
                 'build_id': None,
                 'passed': 0,
@@ -557,7 +557,13 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
                 'total': 0,
                 'status': 'ERROR',
                 'error': str(e)
-            })
+            }
+
+    # Fetch all tabs in parallel using thread pool (collect_from_tab uses sync requests)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    tasks = [loop.run_in_executor(None, _get_tab_result, tab) for tab in all_tabs]
+    results = await asyncio.gather(*tasks)
     
     # Summary counts
     total_pass = sum(1 for r in results if r['status'] == 'PASS')

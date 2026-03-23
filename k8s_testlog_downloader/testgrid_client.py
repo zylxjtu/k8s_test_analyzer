@@ -205,7 +205,11 @@ class TestGridClient:
                         if test_name.endswith('.Overall'):
                             return test_name.replace('.Overall', '')
                     if tests and '.' in tests[0].get('test_name', ''):
-                        return tests[0]['test_name'].split('.')[0]
+                        candidate = tests[0]['test_name'].split('.')[0]
+                        # Validate it looks like a GCS job name, not a test suite name
+                        # GCS job names are lowercase with hyphens (e.g., "ci-kubernetes-e2e-...")
+                        if re.match(r'^[a-z0-9][a-z0-9-]+$', candidate):
+                            return candidate
         except Exception as e:
             logger.warning(f"Failed to fetch prowjob name: {e}")
         
