@@ -400,7 +400,8 @@ def process_and_index_documents(
         # Try to get collection if it exists or create a new one
         collection = chroma_client.get_or_create_collection(
             name=collection_name,
-            embedding_function=embedding_function,
+            # Note: embedding_function intentionally NOT passed to avoid ChromaDB 1.x
+            # ONNX "precompile already registered" error. Embeddings are pre-computed instead.
             metadata={"hnsw:space": "cosine"}
         )
     except Exception as e:
@@ -525,15 +526,12 @@ def process_and_index_documents(
             # Pre-compute embeddings to avoid ChromaDB 1.x internally
             # reconstructing the ONNX embedding function from stored config,
             # which triggers "Artifact of type=precompile already registered" error.
-            embeddings = embedding_function(texts)
+            upsert_kwargs = dict(ids=ids, documents=texts, metadatas=metadatas)
+            if embedding_function is not None:
+                upsert_kwargs["embeddings"] = embedding_function(texts)
 
             # Add nodes to ChromaDB collection
-            collection.upsert(
-                ids=ids,
-                documents=texts,
-                embeddings=embeddings,
-                metadatas=metadatas
-            )
+            collection.upsert(**upsert_kwargs)
 
             total_nodes += len(nodes)
 
@@ -616,10 +614,7 @@ def _get_completed_builds(collection_name: str) -> set:
         if chroma_client is None:
             return set()
 
-        collection = chroma_client.get_collection(
-            name=collection_name,
-            embedding_function=embedding_function
-        )
+        collection = chroma_client.get_collection(name=collection_name)
 
         # Look for the completion marker document
         marker_id = "_completed_builds_marker"
@@ -658,7 +653,6 @@ def _mark_build_completed(collection_name: str, build_id: str) -> bool:
 
             collection = chroma_client.get_or_create_collection(
                 name=collection_name,
-                embedding_function=embedding_function,
                 metadata={"hnsw:space": "cosine"}
             )
 
@@ -670,13 +664,15 @@ def _mark_build_completed(collection_name: str, build_id: str) -> bool:
 
             # Update the marker document (upsert)
             marker_text = ["Completion marker - do not delete"]
-            collection.upsert(
+            marker_kwargs = dict(
                 ids=[marker_id],
                 documents=marker_text,
-                embeddings=embedding_function(marker_text),
                 metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
                            "is_marker": True}]
             )
+            if embedding_function is not None:
+                marker_kwargs["embeddings"] = embedding_function(marker_text)
+            collection.upsert(**marker_kwargs)
 
             logger.debug(f"Marked build {build_id} as completed in {collection_name}")
             return True
@@ -705,7 +701,6 @@ def _unmark_build_completed(collection_name: str, build_id: str) -> bool:
 
             collection = chroma_client.get_or_create_collection(
                 name=collection_name,
-                embedding_function=embedding_function,
                 metadata={"hnsw:space": "cosine"}
             )
 
@@ -718,13 +713,15 @@ def _unmark_build_completed(collection_name: str, build_id: str) -> bool:
             if completed_builds:
                 # Update the marker document
                 marker_text = ["Completion marker - do not delete"]
-                collection.upsert(
+                marker_kwargs = dict(
                     ids=[marker_id],
                     documents=marker_text,
-                    embeddings=embedding_function(marker_text),
                     metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
                                "is_marker": True}]
                 )
+                if embedding_function is not None:
+                    marker_kwargs["embeddings"] = embedding_function(marker_text)
+                collection.upsert(**marker_kwargs)
             else:
                 # No completed builds left, delete the marker
                 try:
@@ -756,10 +753,7 @@ def _get_indexed_build_ids(collection_name: str) -> set:
         if chroma_client is None:
             return set()
 
-        collection = chroma_client.get_collection(
-            name=collection_name,
-            embedding_function=embedding_function
-        )
+        collection = chroma_client.get_collection(name=collection_name)
 
         # Get all metadatas to extract build IDs
         all_docs = collection.get(include=["metadatas"])
@@ -857,10 +851,7 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
             if not builds_to_index:
                 doc_count = 0
                 try:
-                    existing = chroma_client.get_collection(
-                        name=collection_name,
-                        embedding_function=embedding_function
-                    )
+                    existing = chroma_client.get_collection(name=collection_name)
                     doc_count = existing.count()
                 except Exception:
                     pass
@@ -1035,10 +1026,7 @@ def delete_build_from_index(collection_name: str, build_id: str) -> dict:
 
         # Get the collection
         try:
-            collection = chroma_client.get_collection(
-                name=collection_name,
-                embedding_function=embedding_function
-            )
+            collection = chroma_client.get_collection(name=collection_name)
         except Exception as e:
             return {"success": False, "error": f"Collection not found: {collection_name}"}
 
@@ -1091,10 +1079,7 @@ def get_build_chunks(collection_name: str, build_id: str, include_embeddings: bo
 
         # Get the collection
         try:
-            collection = chroma_client.get_collection(
-                name=collection_name,
-                embedding_function=embedding_function
-            )
+            collection = chroma_client.get_collection(name=collection_name)
         except Exception:
             return {"success": False, "error": f"Collection not found: {collection_name}", "chunks": []}
 

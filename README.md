@@ -23,6 +23,9 @@ The MCP server provides AI assistants with tools to analyze Kubernetes test logs
 docker compose build
 DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) docker compose up -d
 
+# Shutdown
+docker compose down
+
 # Or run directly (requires Python setup - see Development section)
 python mcp_server.py
 ```

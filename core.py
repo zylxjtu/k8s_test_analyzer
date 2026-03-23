@@ -207,13 +207,21 @@ async def search_logs(
     for collection_name in matching_collections:
         collection = chroma_client.get_collection(collection_name)
 
-        # Filter by build_id to search only within the specified build
-        results = collection.query(
-            query_texts=[query],
+        # Pre-compute query embeddings to avoid ChromaDB 1.x ONNX
+        # "precompile already registered" error from config reconstruction
+        ef = get_embedding_function()
+        query_kwargs = dict(
             n_results=n_results,
             where={"build_id": str(build_id)},
             include=["documents", "metadatas", "distances"]
         )
+        if ef is not None:
+            query_kwargs["query_embeddings"] = ef([query])
+        else:
+            query_kwargs["query_texts"] = [query]
+
+        # Filter by build_id to search only within the specified build
+        results = collection.query(**query_kwargs)
 
         if results["documents"] and results["documents"][0]:
             for doc, meta, distance in zip(

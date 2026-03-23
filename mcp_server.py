@@ -651,8 +651,8 @@ async def main():
 
     if success:
         logger.info("ChromaDB initialized successfully")
-        # Perform initial indexing of existing folders
-        await perform_initial_indexing()
+        # Run initial indexing in background so the MCP server can accept connections immediately
+        asyncio.create_task(perform_initial_indexing())
     else:
         logger.warning("ChromaDB initialization had issues, some features may not work")
 
