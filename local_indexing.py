@@ -526,12 +526,20 @@ def process_and_index_documents(
             # Pre-compute embeddings to avoid ChromaDB 1.x internally
             # reconstructing the ONNX embedding function from stored config,
             # which triggers "Artifact of type=precompile already registered" error.
-            upsert_kwargs = dict(ids=ids, documents=texts, metadatas=metadatas)
-            if embedding_function is not None:
-                upsert_kwargs["embeddings"] = embedding_function(texts)
+            embeddings = embedding_function(texts) if embedding_function is not None else None
 
-            # Add nodes to ChromaDB collection
-            collection.upsert(**upsert_kwargs)
+            # ChromaDB max batch size is 5461 - split large files into batches
+            CHROMA_MAX_BATCH = 5000
+            for batch_start in range(0, len(ids), CHROMA_MAX_BATCH):
+                batch_end = batch_start + CHROMA_MAX_BATCH
+                upsert_kwargs = dict(
+                    ids=ids[batch_start:batch_end],
+                    documents=texts[batch_start:batch_end],
+                    metadatas=metadatas[batch_start:batch_end]
+                )
+                if embeddings is not None:
+                    upsert_kwargs["embeddings"] = embeddings[batch_start:batch_end]
+                collection.upsert(**upsert_kwargs)
 
             total_nodes += len(nodes)
 
