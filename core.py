@@ -4,6 +4,7 @@ Core operations shared between MCP server and CLI.
 Contains the business logic for download, index, and search operations.
 """
 
+import asyncio
 import os
 import json
 import logging
@@ -64,8 +65,9 @@ async def download_and_index(
         dict with download results and optional indexing results
     """
     c = get_collector()
-    result = c.collect_from_tab(tab, dashboard=dashboard, build_id=build_id)
-    
+    # Run blocking HTTP/disk calls in a thread to avoid stalling the event loop
+    result = await asyncio.to_thread(c.collect_from_tab, tab, dashboard=dashboard, build_id=build_id)
+
     # Index the downloaded logs for search unless skipped
     if not skip_indexing and "error" not in result:
         project_name = result.get("source", {}).get("gcs_job_name") or result.get("job_name")
@@ -99,8 +101,9 @@ async def download_all_and_index(
         dict with download results and indexing summary
     """
     c = get_collector()
-    result = c.collect_all_tabs(dashboard, limit)
-    
+    # Run blocking HTTP/disk calls in a thread to avoid stalling the event loop
+    result = await asyncio.to_thread(c.collect_all_tabs, dashboard, limit)
+
     # Index all downloaded projects unless skipped
     if not skip_indexing and "tabs" in result:
         indexing_results = []
@@ -336,7 +339,7 @@ async def get_all_latest_build_index_status(
 
     # Get all tabs if not specified
     if tabs is None:
-        tabs = c.list_tabs(dashboard)
+        tabs = await asyncio.to_thread(c.list_tabs, dashboard)
 
     results = []
     for tab in tabs:
@@ -513,13 +516,13 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
     """
     c = get_collector()
     dashboard = dashboard or os.getenv("DEFAULT_DASHBOARD", "sig-windows-signal")
-    
-    # Get list of tabs to check
-    all_tabs = c.list_tabs(dashboard)
+
+    # Get list of tabs to check (list_tabs makes an HTTP call — run in thread)
+    all_tabs = await asyncio.to_thread(c.list_tabs, dashboard)
     if tabs:
         filter_tabs = [t.strip() for t in tabs.split(',')]
         all_tabs = [t for t in all_tabs if t in filter_tabs]
-    
+
     def _get_tab_result(tab):
         """Fetch status for a single tab (runs in thread pool)."""
         try:
@@ -560,7 +563,6 @@ async def get_tab_status(dashboard: str = None, tabs: str = None) -> dict:
             }
 
     # Fetch all tabs in parallel using thread pool (collect_from_tab uses sync requests)
-    import asyncio
     loop = asyncio.get_event_loop()
     tasks = [loop.run_in_executor(None, _get_tab_result, tab) for tab in all_tabs]
     results = await asyncio.gather(*tasks)
