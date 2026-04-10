@@ -22,8 +22,15 @@ COPY core.py .
 COPY local_indexing.py .
 COPY healthcheck.py .
 
+# Pre-download the embedding model during build so it's cached in the image
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
+# Allow non-root users to add passwd entries (sentence-transformers calls getpwuid)
+RUN chmod a+w /etc/passwd
+
 # Expose the FastMCP port
 EXPOSE ${FASTMCP_PORT}
 
-# Default command - run integrated server
-CMD ["python", "mcp_server.py"]
+# Entrypoint: ensure current UID has a passwd entry (sentence-transformers calls getpwuid)
+# then run the MCP server
+CMD ["sh", "-c", "if ! getent passwd $(id -u) >/dev/null 2>&1; then echo \"appuser:x:$(id -u):$(id -g)::/app:/bin/sh\" >> /etc/passwd; fi && python mcp_server.py"]

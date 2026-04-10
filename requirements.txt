@@ -6,7 +6,7 @@ PyYAML==6.0.3
 python-dotenv==1.2.1
 
 # MCP Server
-fastmcp==2.14.1
+fastmcp==2.13.3
 
 # Vector database and embeddings
 chromadb==1.4.0

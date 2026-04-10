@@ -71,6 +71,13 @@ DEFAULT_FILE_EXTENSIONS = {
     ".txt", ".log", ".xml"  # Include log files and test outputs
 }
 
+# Maximum file size to index (in bytes). Files larger than this are skipped to prevent OOM.
+# Node logs like containerd.log and kubelet.log can be 100-500MB each; indexing them causes
+# 10+ GB memory spikes when multiple builds are indexed simultaneously.
+# Configurable via MAX_INDEX_FILE_SIZE_MB environment variable (default: 50MB).
+_env_max_mb = int(os.environ.get("MAX_INDEX_FILE_SIZE_MB", "50"))
+MAX_INDEX_FILE_SIZE_BYTES = _env_max_mb * 1024 * 1024
+
 # Global variables
 config = None
 chroma_client = None
@@ -357,6 +364,20 @@ def load_documents(
                     file_extensions,
                     ignore_files
                 ):
+                    # Skip files that exceed the size limit to prevent OOM during indexing.
+                    # Large node logs (containerd.log, kubelet.log) can be 100-500MB each.
+                    try:
+                        file_size = os.path.getsize(abs_file_path)
+                        if file_size > MAX_INDEX_FILE_SIZE_BYTES:
+                            rel_file_path = os.path.relpath(abs_file_path, directory)
+                            logger.info(
+                                f"Skipping large file (>{MAX_INDEX_FILE_SIZE_BYTES // (1024*1024)}MB): "
+                                f"{rel_file_path} ({file_size / (1024*1024):.1f}MB)"
+                            )
+                            continue
+                    except OSError:
+                        continue
+
                     # Calculate relative path from the directory being indexed
                     rel_file_path = os.path.relpath(abs_file_path, directory)
                     all_files.append((abs_file_path, rel_file_path))
