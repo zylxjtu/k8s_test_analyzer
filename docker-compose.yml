@@ -21,7 +21,7 @@ services:
       - ADDITIONAL_IGNORE_DIRS=${ADDITIONAL_IGNORE_DIRS}  # Additional directories to ignore
       - ADDITIONAL_IGNORE_FILES=${ADDITIONAL_IGNORE_FILES:-containerd.log}  # Skip containerd.log (46-64MB) to prevent FTS index bloat
       - SCHEDULE_INTERVAL_SECONDS=${SCHEDULE_INTERVAL_SECONDS:-1800}
-      - CLEANUP_KEEP_BUILDS=${CLEANUP_KEEP_BUILDS:-10}
+      - CLEANUP_KEEP_BUILDS=${CLEANUP_KEEP_BUILDS:-5}
       - HEALTHCHECK_MAX_AGE=${HEALTHCHECK_MAX_AGE:-300}  # Heartbeat staleness threshold (seconds)
       # Skip files larger than this during indexing (prevents OOM from large node logs)
       - MAX_INDEX_FILE_SIZE_MB=${MAX_INDEX_FILE_SIZE_MB:-20}
