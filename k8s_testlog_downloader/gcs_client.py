@@ -16,6 +16,8 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,19 @@ class GCSClient:
         self.session.headers.update({
             "User-Agent": "k8s-test-analyzer/0.1.0"
         })
+        # Retry transient connection drops from gcsweb.k8s.io / storage.googleapis.com
+        # (RemoteDisconnected, 5xx, 429). Without this, a single hiccup turns into
+        # `build_id: "unknown"` / 0/0/0 in get_tab_status output.
+        retry = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
     
     def get_job_builds(self, job_name: str, limit: int = 10) -> list[str]:
         """
