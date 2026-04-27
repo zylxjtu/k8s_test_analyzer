@@ -417,6 +417,10 @@ def process_and_index_documents(
         logger.warning("No documents to process.")
         return
 
+    if chroma_client is None:
+        logger.error("ChromaDB not initialized — skipping indexing of %d documents", len(documents))
+        return
+
     try:
         # Try to get collection if it exists or create a new one
         collection = chroma_client.get_or_create_collection(

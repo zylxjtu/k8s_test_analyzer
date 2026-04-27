@@ -656,10 +656,12 @@ async def main():
     else:
         logger.warning("ChromaDB initialization had issues, some features may not work")
 
-    # Start background scheduled task
-    if SCHEDULE_INTERVAL_SECONDS > 0:
+    # Start background scheduled task (only if ChromaDB initialized — indexing requires it)
+    if SCHEDULE_INTERVAL_SECONDS > 0 and success:
         logger.info(f"Starting scheduled download/reindex task (interval: {SCHEDULE_INTERVAL_SECONDS}s)")
         asyncio.create_task(scheduled_download_and_reindex())
+    elif SCHEDULE_INTERVAL_SECONDS > 0:
+        logger.warning("Scheduled task NOT started — ChromaDB initialization failed")
     else:
         logger.info("Scheduled task disabled (SCHEDULE_INTERVAL_SECONDS=0)")
 
