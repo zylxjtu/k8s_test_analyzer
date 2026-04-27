@@ -26,7 +26,7 @@ services:
       # Skip files larger than this during indexing (prevents OOM from large node logs)
       - MAX_INDEX_FILE_SIZE_MB=${MAX_INDEX_FILE_SIZE_MB:-20}
       # Use the model pre-downloaded into the image at build time — prevents 2-minute HF Hub startup checks
-      - HF_HOME=/root/.cache/huggingface
+      - HF_HOME=/app/.cache/huggingface
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
     restart: unless-stopped
