@@ -20,3 +20,6 @@ llama-index-embeddings-huggingface==0.5.5
 # Tree-sitter for code parsing
 tree-sitter==0.25.2
 tree-sitter-language-pack==0.13.0
+
+# Timezone data for the daily restart hour check (python:3.11-slim has no /usr/share/zoneinfo)
+tzdata==2025.2

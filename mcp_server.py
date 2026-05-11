@@ -5,9 +5,13 @@ Provides tools for downloading K8s CI test logs and searching indexed content.
 """
 
 import os
+import sys
+import time
 import logging
 import json
 import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from fastmcp import FastMCP
 
@@ -584,6 +588,31 @@ SCHEDULE_INTERVAL_SECONDS = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "3600"))
 # Number of builds to keep per job during cleanup (default: 10)
 CLEANUP_KEEP_BUILDS = int(os.getenv("CLEANUP_KEEP_BUILDS", "10"))
 
+# Restart triggers — exit cleanly so Docker (restart: unless-stopped) respawns
+# with a fresh ChromaDB HNSW (drops accumulated tombstones).
+#
+# RESTART_AT_HOUR: hour of day (0–23) in the configured TZ to trigger restart.
+# -1 disables. Default 2 (02:XX). Combined with min-uptime so we don't bounce.
+# MAX_LIFETIME_SECONDS: backstop in case the hourly check is missed. 0 disables.
+RESTART_AT_HOUR = int(os.getenv("RESTART_AT_HOUR", "-1"))
+MAX_LIFETIME_SECONDS = int(os.getenv("MAX_LIFETIME_SECONDS", "129600"))  # 36h backstop
+_RESTART_MIN_UPTIME_SECONDS = 3600  # don't fire within 1h of startup
+_PROCESS_START_MONOTONIC = time.monotonic()
+
+
+def _get_restart_tz():
+    name = os.getenv("TZ")
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        logger.warning("TZ=%r not found in zoneinfo data; using system local time for restart hour check", name)
+        return None
+
+
+_RESTART_TZ = _get_restart_tz()
+
 
 async def run_download_and_cleanup():
     """Execute the download, index, and cleanup operations once."""
@@ -635,6 +664,26 @@ async def scheduled_download_and_reindex():
     # Then run periodically
     while True:
         try:
+            elapsed = time.monotonic() - _PROCESS_START_MONOTONIC
+
+            # Daily wall-clock-hour restart (preferred trigger).
+            if RESTART_AT_HOUR >= 0 and elapsed >= _RESTART_MIN_UPTIME_SECONDS:
+                now = datetime.now(_RESTART_TZ) if _RESTART_TZ else datetime.now()
+                if now.hour == RESTART_AT_HOUR:
+                    logger.info(
+                        f"RESTART_AT_HOUR={RESTART_AT_HOUR} reached (now={now.isoformat()}); "
+                        "exiting for daily restart (Docker will respawn)"
+                    )
+                    sys.exit(0)
+
+            # Lifetime backstop in case the hourly check is missed.
+            if MAX_LIFETIME_SECONDS > 0 and elapsed >= MAX_LIFETIME_SECONDS:
+                logger.info(
+                    f"MAX_LIFETIME_SECONDS reached ({elapsed:.0f}s >= {MAX_LIFETIME_SECONDS}s); "
+                    "exiting for periodic restart (Docker will respawn)"
+                )
+                sys.exit(0)
+
             logger.info(f"Scheduled task: sleeping for {SCHEDULE_INTERVAL_SECONDS} seconds until next run...")
             await asyncio.sleep(SCHEDULE_INTERVAL_SECONDS)
             await run_download_and_cleanup()
@@ -666,7 +715,14 @@ async def main():
         logger.info("Scheduled task disabled (SCHEDULE_INTERVAL_SECONDS=0)")
 
     port = int(os.getenv("FASTMCP_PORT", "8978"))
-    await mcp.run_async(transport="sse", host="0.0.0.0", port=port)
+    transport = os.getenv("FASTMCP_TRANSPORT", "streamable-http")
+    # Stateless mode = no session tracking; survives server restarts cleanly
+    # since the client doesn't need to re-init a session that the server lost.
+    stateless = os.getenv("FASTMCP_STATELESS_HTTP", "true").lower() in ("1", "true", "yes")
+    transport_kwargs = {"host": "0.0.0.0", "port": port}
+    if transport == "streamable-http":
+        transport_kwargs["stateless_http"] = stateless
+    await mcp.run_async(transport=transport, **transport_kwargs)
 
 
 if __name__ == "__main__":

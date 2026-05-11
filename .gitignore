@@ -13,3 +13,4 @@ chroma_db/
 
 # Environment files (generated from .env.template)
 .env
+.claude

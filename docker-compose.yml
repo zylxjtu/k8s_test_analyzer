@@ -25,6 +25,12 @@ services:
       - HEALTHCHECK_MAX_AGE=${HEALTHCHECK_MAX_AGE:-300}  # Heartbeat staleness threshold (seconds)
       # Skip files larger than this during indexing (prevents OOM from large node logs)
       - MAX_INDEX_FILE_SIZE_MB=${MAX_INDEX_FILE_SIZE_MB:-20}
+      # Daily restart to clear ChromaDB HNSW tombstones that don't release
+      # memory on chunk delete. Hour is in the TZ below. -1 disables.
+      - TZ=${TZ:-America/Los_Angeles}
+      - RESTART_AT_HOUR=${RESTART_AT_HOUR:-2}
+      # Backstop in case the hourly check is missed (default 36h). 0 disables.
+      - MAX_LIFETIME_SECONDS=${MAX_LIFETIME_SECONDS:-129600}
       # Use the model pre-downloaded into the image at build time — prevents 2-minute HF Hub startup checks
       - HF_HOME=/app/.cache/huggingface
       - HF_HUB_OFFLINE=1
@@ -34,6 +40,7 @@ services:
       resources:
         limits:
           cpus: '2'
+          memory: 12g
     healthcheck:
       test: ["CMD", "python", "healthcheck.py"]
       interval: 60s
