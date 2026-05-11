@@ -3,11 +3,12 @@ Local indexing module for k8s-test-analyzer.
 Handles ChromaDB initialization, document loading, and indexing.
 """
 
+import gc
 import os
 import logging
 import signal
 import time
-from typing import List, Set
+from typing import Iterator, List, Set
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import chromadb
@@ -402,6 +403,68 @@ def load_documents(
     except Exception as e:
         logger.error(f"Error loading documents: {e}")
         return []
+
+
+def iter_documents(
+    directory: str,
+    ignore_dirs: Set[str] = DEFAULT_IGNORE_DIRS,
+    file_extensions: Set[str] = DEFAULT_FILE_EXTENSIONS,
+    ignore_files: Set[str] = None,
+) -> Iterator[Document]:
+    """Yield Documents one file at a time so the caller never holds the
+    whole project in memory simultaneously. Same filtering rules as
+    load_documents."""
+    for root, dirs, files in os.walk(directory, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith('.')]
+        for file in files:
+            abs_file_path = os.path.join(root, file)
+            if os.path.islink(abs_file_path):
+                continue
+            if not is_valid_file(abs_file_path, ignore_dirs, file_extensions, ignore_files):
+                continue
+            try:
+                file_size = os.path.getsize(abs_file_path)
+            except OSError:
+                continue
+            rel_file_path = os.path.relpath(abs_file_path, directory)
+            if file_size > MAX_INDEX_FILE_SIZE_BYTES:
+                logger.info(
+                    f"Skipping large file (>{MAX_INDEX_FILE_SIZE_BYTES // (1024*1024)}MB): "
+                    f"{rel_file_path} ({file_size / (1024*1024):.1f}MB)"
+                )
+                continue
+            try:
+                reader = SimpleDirectoryReader(input_files=[abs_file_path], exclude_hidden=True)
+                docs = reader.load_data()
+            except Exception as e:
+                logger.error(f"Error loading {abs_file_path}: {e}")
+                continue
+            for doc in docs:
+                doc.metadata["file_path"] = rel_file_path
+                yield doc
+
+
+def index_build_streaming(
+    build_path: str,
+    build_id: str,
+    collection_name: str,
+    ignore_dirs: Set[str],
+    file_extensions: Set[str],
+    ignore_files: Set[str],
+) -> int:
+    """Index one build's documents streaming-style: load → tag → upsert one
+    file at a time so peak working set is one file, not the whole build.
+    Runs sync (call from asyncio.to_thread). Returns file count processed."""
+    file_count = 0
+    for doc in iter_documents(build_path, ignore_dirs, file_extensions, ignore_files):
+        if hasattr(doc, "metadata"):
+            doc.metadata["build_id"] = build_id
+        process_and_index_documents([doc], collection_name, "chroma_db")
+        file_count += 1
+        del doc
+    # Reclaim transient embedding/chunk arrays before next build's load
+    gc.collect()
+    return file_count
 
 
 def process_and_index_documents(
@@ -918,37 +981,30 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
                 logger.info(f"Removing partial index for interrupted build {build_id}")
                 await asyncio.to_thread(delete_build_from_index, collection_name, build_id)
 
-            build_docs = await asyncio.to_thread(
-                load_documents,
+            # Stream files through the indexer one at a time so peak RAM
+            # is one file's chunks/embeddings, not the whole build's.
+            file_count = await asyncio.to_thread(
+                index_build_streaming,
                 build_path,
+                build_id,
+                collection_name,
                 set(config["ignore_dirs"]),
                 set(config["file_extensions"]),
-                set(config["ignore_files"])
+                set(config["ignore_files"]),
             )
 
-            if not build_docs:
+            if file_count == 0:
                 # No documents but mark as completed (empty build)
                 _mark_build_completed(collection_name, build_id)
                 newly_indexed.append(build_id)
                 continue
 
-            # Add build_id as metadata so we can identify which build each chunk belongs to
-            for doc in build_docs:
-                if hasattr(doc, 'metadata'):
-                    doc.metadata['build_id'] = build_id
-
-            # Index this build's documents in a thread to avoid blocking the event loop
-            # This allows the MCP server to remain responsive during indexing
-            await asyncio.to_thread(
-                process_and_index_documents, build_docs, collection_name, "chroma_db"
-            )
-
             # Mark build as completed AFTER successful indexing
             _mark_build_completed(collection_name, build_id)
 
-            total_documents += len(build_docs)
+            total_documents += file_count
             newly_indexed.append(build_id)
-            logger.info(f"Completed indexing build {build_id}: {len(build_docs)} documents")
+            logger.info(f"Completed indexing build {build_id}: {file_count} documents")
 
         if not newly_indexed:
             return {
