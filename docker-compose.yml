@@ -31,6 +31,11 @@ services:
       - RESTART_AT_HOUR=${RESTART_AT_HOUR:-2}
       # Backstop in case the hourly check is missed (default 36h). 0 disables.
       - MAX_LIFETIME_SECONDS=${MAX_LIFETIME_SECONDS:-129600}
+      # Memory instrumentation. Default off; enable temporarily to diagnose OOM.
+      # MEMORY_MONITOR_INTERVAL_SECONDS=10 logs RSS every 10s.
+      # TRACE_MEMORY=true also enables tracemalloc (top Python allocators per phase).
+      - MEMORY_MONITOR_INTERVAL_SECONDS=${MEMORY_MONITOR_INTERVAL_SECONDS:-0}
+      - TRACE_MEMORY=${TRACE_MEMORY:-false}
       # Use the model pre-downloaded into the image at build time — prevents 2-minute HF Hub startup checks
       - HF_HOME=/app/.cache/huggingface
       - HF_HUB_OFFLINE=1

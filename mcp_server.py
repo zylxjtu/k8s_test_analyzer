@@ -614,15 +614,69 @@ def _get_restart_tz():
 _RESTART_TZ = _get_restart_tz()
 
 
+# Memory instrumentation. Set to find what's driving the OOM-kill loop.
+#   MEMORY_MONITOR_INTERVAL_SECONDS=10  → background task logs RSS every N s
+#   TRACE_MEMORY=true                   → tracemalloc on; log top Python allocators
+MEMORY_MONITOR_INTERVAL_SECONDS = int(os.getenv("MEMORY_MONITOR_INTERVAL_SECONDS", "0"))
+_TRACE_MEMORY = os.getenv("TRACE_MEMORY", "false").lower() in ("1", "true", "yes")
+if _TRACE_MEMORY:
+    import tracemalloc
+    tracemalloc.start(15)  # 15 frames is enough to see chromadb / sentence_transformers paths
+
+
+def _rss_mb():
+    """Read current + peak RSS from /proc/self/status. Returns (cur_mb, peak_mb)."""
+    try:
+        with open("/proc/self/status") as f:
+            data = f.read()
+        cur = peak = 0.0
+        for line in data.split("\n"):
+            if line.startswith("VmRSS:"):
+                cur = int(line.split()[1]) / 1024
+            elif line.startswith("VmHWM:"):
+                peak = int(line.split()[1]) / 1024
+        return cur, peak
+    except Exception:
+        return 0.0, 0.0
+
+
+def _log_mem(label: str):
+    """Log RSS and (if TRACE_MEMORY) top Python allocators."""
+    cur, peak = _rss_mb()
+    msg = f"[MEM] {label}: RSS={cur:.0f}MB peak={peak:.0f}MB"
+    if _TRACE_MEMORY:
+        py_cur, py_peak = tracemalloc.get_traced_memory()
+        msg += f" py_alloc={py_cur/1024/1024:.0f}MB py_peak={py_peak/1024/1024:.0f}MB"
+    logger.info(msg)
+    if _TRACE_MEMORY:
+        snapshot = tracemalloc.take_snapshot()
+        top = snapshot.statistics("lineno")[:5]
+        for i, stat in enumerate(top, 1):
+            # Last frame is the actual alloc site
+            frame = stat.traceback[-1] if stat.traceback else None
+            loc = f"{frame.filename}:{frame.lineno}" if frame else "<unknown>"
+            logger.info(f"[MEM]   #{i} {stat.size/1024/1024:.1f}MB  {stat.count:,} blocks  {loc}")
+
+
+async def _memory_monitor():
+    """Background task: log RSS every MEMORY_MONITOR_INTERVAL_SECONDS."""
+    while True:
+        await asyncio.sleep(MEMORY_MONITOR_INTERVAL_SECONDS)
+        cur, peak = _rss_mb()
+        logger.info(f"[MEM-MON] RSS={cur:.0f}MB peak={peak:.0f}MB")
+
+
 async def run_download_and_cleanup():
     """Execute the download, index, and cleanup operations once."""
     write_heartbeat()  # Start of task
     logger.info("Starting scheduled download and reindex...")
+    _log_mem("cycle_start")
 
     # Download and index new builds
     try:
         result = await core.download_all_and_index(skip_indexing=False)
         write_heartbeat()  # After download/index
+        _log_mem("after_download_and_index")
 
         if "error" in result:
             logger.error(f"Download failed: {result.get('error')}")
@@ -635,6 +689,7 @@ async def run_download_and_cleanup():
     except Exception as e:
         logger.error(f"Error during download/index: {e}", exc_info=True)
         write_heartbeat()  # Update even on error
+        _log_mem("after_download_index_error")
         return False
 
     # Clean up old builds
@@ -652,6 +707,7 @@ async def run_download_and_cleanup():
         logger.info("Cleanup disabled (CLEANUP_KEEP_BUILDS=0)")
 
     write_heartbeat()  # End of task
+    _log_mem("cycle_end")
     logger.info("Scheduled task complete")
     return True
 
@@ -695,8 +751,16 @@ async def scheduled_download_and_reindex():
 
 # Run initialization before starting MCP
 async def main():
+    _log_mem("startup")
+    if MEMORY_MONITOR_INTERVAL_SECONDS > 0:
+        logger.info(f"Memory monitor enabled (every {MEMORY_MONITOR_INTERVAL_SECONDS}s)")
+        asyncio.create_task(_memory_monitor())
+    if _TRACE_MEMORY:
+        logger.info("tracemalloc enabled; top Python allocators will be logged at each cycle phase")
+
     # Initialize ChromaDB before starting MCP
     success = await initialize_chromadb()
+    _log_mem("after_chromadb_init")
 
     if success:
         logger.info("ChromaDB initialized successfully")
