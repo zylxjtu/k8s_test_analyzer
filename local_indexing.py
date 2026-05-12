@@ -693,12 +693,41 @@ def _split_text_to_nodes(text: str, file_path: str, file_name: str, extra_metada
     return nodes
 
 
+def _marker_file_path(collection_name: str) -> str:
+    """Filesystem path for the completion marker file for a collection.
+
+    Stored under projects_root so it lives next to the build data, survives
+    container restarts (bind-mounted), and is independent of the ChromaDB
+    storage layer.
+    """
+    safe = collection_name.replace("/", "_")
+    return os.path.join(config["projects_root"], f".completed_builds_{safe}.txt")
+
+
+def _write_completed_builds(collection_name: str, completed: set) -> bool:
+    """Atomically write the completion marker file."""
+    try:
+        marker_path = _marker_file_path(collection_name)
+        tmp_path = marker_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            for build_id in sorted(completed):
+                f.write(f"{build_id}\n")
+        os.replace(tmp_path, marker_path)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing completion marker for {collection_name}: {e}")
+        return False
+
+
 def _get_completed_builds(collection_name: str) -> set:
     """Get set of build IDs that have been fully indexed in a collection.
 
-    Uses a completion marker document to track which builds finished indexing.
-    This prevents partially indexed builds (from interrupted indexing) from
-    being skipped on subsequent runs.
+    Reads from a filesystem marker file so we never touch ChromaDB on the
+    "already indexed?" hot path (each get_collection / get() call forces a
+    HNSW segment load into RAM ~500 MB per collection).
+
+    On first call after upgrade, if the file is missing, falls back to the
+    legacy in-collection marker document and migrates it to the file.
 
     Args:
         collection_name: Name of the ChromaDB collection
@@ -707,25 +736,29 @@ def _get_completed_builds(collection_name: str) -> set:
         Set of build ID strings that are fully indexed
     """
     try:
+        marker_path = _marker_file_path(collection_name)
+        if os.path.exists(marker_path):
+            with open(marker_path) as f:
+                return {line.strip() for line in f if line.strip()}
+
+        # One-time migration from legacy chromadb-stored marker.
         if chroma_client is None:
             return set()
-
-        collection = chroma_client.get_collection(name=collection_name)
-
-        # Look for the completion marker document
-        marker_id = "_completed_builds_marker"
-        result = collection.get(ids=[marker_id], include=["metadatas"])
-
-        if not result or not result.get("metadatas") or not result["metadatas"]:
-            return set()
-
-        # Completed builds stored as comma-separated string in metadata
-        completed_str = result["metadatas"][0].get("completed_builds", "")
-        if not completed_str:
-            return set()
-
-        return set(completed_str.split(","))
-    except Exception:
+        try:
+            collection = chroma_client.get_collection(name=collection_name)
+            result = collection.get(ids=["_completed_builds_marker"], include=["metadatas"])
+            if result and result.get("metadatas") and result["metadatas"]:
+                completed_str = result["metadatas"][0].get("completed_builds", "")
+                if completed_str:
+                    migrated = set(completed_str.split(","))
+                    _write_completed_builds(collection_name, migrated)
+                    logger.info(f"Migrated {len(migrated)} completion markers to filesystem for {collection_name}")
+                    return migrated
+        except Exception:
+            pass
+        return set()
+    except Exception as e:
+        logger.error(f"Error reading completed builds for {collection_name}: {e}")
         return set()
 
 
@@ -743,38 +776,12 @@ def _mark_build_completed(collection_name: str, build_id: str) -> bool:
         True if successful, False otherwise
     """
     with _completion_marker_lock:
-        try:
-            if chroma_client is None:
-                return False
-
-            collection = chroma_client.get_or_create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"}
-            )
-
-            marker_id = "_completed_builds_marker"
-
-            # Get existing completed builds (inside lock to prevent race)
-            completed_builds = _get_completed_builds(collection_name)
-            completed_builds.add(str(build_id))
-
-            # Update the marker document (upsert)
-            marker_text = ["Completion marker - do not delete"]
-            marker_kwargs = dict(
-                ids=[marker_id],
-                documents=marker_text,
-                metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
-                           "is_marker": True}]
-            )
-            if embedding_function is not None:
-                marker_kwargs["embeddings"] = embedding_function(marker_text)
-            collection.upsert(**marker_kwargs)
-
+        completed = _get_completed_builds(collection_name)
+        completed.add(str(build_id))
+        ok = _write_completed_builds(collection_name, completed)
+        if ok:
             logger.debug(f"Marked build {build_id} as completed in {collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Error marking build {build_id} as completed: {e}")
-            return False
+        return ok
 
 
 def _unmark_build_completed(collection_name: str, build_id: str) -> bool:
@@ -791,47 +798,12 @@ def _unmark_build_completed(collection_name: str, build_id: str) -> bool:
         True if successful, False otherwise
     """
     with _completion_marker_lock:
-        try:
-            if chroma_client is None:
-                return False
-
-            collection = chroma_client.get_or_create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"}
-            )
-
-            marker_id = "_completed_builds_marker"
-
-            # Get existing completed builds and remove this one (inside lock)
-            completed_builds = _get_completed_builds(collection_name)
-            completed_builds.discard(str(build_id))
-
-            if completed_builds:
-                # Update the marker document
-                marker_text = ["Completion marker - do not delete"]
-                marker_kwargs = dict(
-                    ids=[marker_id],
-                    documents=marker_text,
-                    metadatas=[{"completed_builds": ",".join(sorted(completed_builds)),
-                               "is_marker": True}]
-                )
-                if embedding_function is not None:
-                    marker_kwargs["embeddings"] = embedding_function(marker_text)
-                collection.upsert(**marker_kwargs)
-            else:
-                # No completed builds left, delete the marker
-                try:
-                    collection.delete(ids=[marker_id])
-                except Exception:
-                    pass
-
+        completed = _get_completed_builds(collection_name)
+        completed.discard(str(build_id))
+        ok = _write_completed_builds(collection_name, completed)
+        if ok:
             logger.debug(f"Removed build {build_id} from completed list in {collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Error removing build {build_id} from completed list: {e}")
-            return False
-
-
+        return ok
 def _get_indexed_build_ids(collection_name: str) -> set:
     """Get set of build IDs that are already indexed in a collection.
 
@@ -945,13 +917,11 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
             builds_to_index = set(all_build_folders) - completed_builds
 
             if not builds_to_index:
-                doc_count = 0
-                try:
-                    existing = chroma_client.get_collection(name=collection_name)
-                    doc_count = existing.count()
-                except Exception:
-                    pass
-
+                # Don't touch the chromadb collection here. get_collection() +
+                # count() on chromadb 1.x forces the HNSW graph into memory
+                # (~500 MB per collection) — and on a steady-state cycle every
+                # project hits this branch, so we'd load every collection just
+                # for a status field that nothing reads. Skip it entirely.
                 logger.info(f"All {len(all_build_folders)} builds already indexed for {project_name}")
                 return {
                     "success": True,
@@ -959,7 +929,6 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
                     "collection": collection_name,
                     "message": "Already indexed",
                     "documents_indexed": 0,
-                    "existing_chunks": doc_count,
                     "builds_indexed": list(completed_builds)
                 }
 
