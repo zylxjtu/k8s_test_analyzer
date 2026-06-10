@@ -666,6 +666,61 @@ async def _memory_monitor():
         logger.info(f"[MEM-MON] RSS={cur:.0f}MB peak={peak:.0f}MB")
 
 
+async def _run_cleanup_subprocess(keep_builds: int) -> dict:
+    """Run cleanup_old_builds in an isolated subprocess.
+
+    Why: ChromaDB 1.x keeps HNSW segments resident in process memory once
+    a collection is touched, and cleanup touches every collection that
+    has builds to delete. Done in-process, that's ~10 GiB of accumulating
+    RSS per cycle, which trips the 12 GiB cgroup cap. Done in a subprocess,
+    the kernel reclaims all that memory on the child's exit while this
+    long-lived MCP server stays at its post-indexing baseline.
+
+    On success: returns the dict from core.cleanup_old_builds.
+    On failure: returns {"error": "...", optional "stdout_tail": "..."}.
+    """
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanup_worker.py")
+    if not os.path.exists(worker):
+        return {"error": f"cleanup_worker.py not found at {worker}"}
+
+    # stdout: capture for the JSON result line.
+    # stderr: inherit so worker info/error logs flow live into docker logs.
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, worker, "--keep-builds", str(keep_builds),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=None,
+        env=os.environ.copy(),
+    )
+
+    try:
+        # 15 min cap. Real cleanup is ~3 min; 15 covers slow disks + degenerate cases.
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+    except asyncio.TimeoutError:
+        logger.error("Cleanup subprocess timed out after 900s; killing")
+        proc.kill()
+        await proc.wait()
+        return {"error": "cleanup subprocess timed out after 900s"}
+
+    if proc.returncode != 0:
+        return {
+            "error": f"cleanup subprocess exited with code {proc.returncode}",
+            "stdout_tail": stdout.decode("utf-8", errors="replace")[-500:],
+        }
+
+    # Worker writes its result as the final stdout line. Parse just that.
+    text = stdout.decode("utf-8", errors="replace").strip()
+    if not text:
+        return {"error": "cleanup subprocess produced no output"}
+    last_line = text.split("\n")[-1]
+    try:
+        return json.loads(last_line)
+    except json.JSONDecodeError as e:
+        return {
+            "error": f"failed to parse subprocess result as JSON: {e}",
+            "stdout_tail": text[-500:],
+        }
+
+
 async def run_download_and_cleanup():
     """Execute the download, index, and cleanup operations once."""
     write_heartbeat()  # Start of task
@@ -692,15 +747,24 @@ async def run_download_and_cleanup():
         _log_mem("after_download_index_error")
         return False
 
-    # Clean up old builds
+    # Clean up old builds — runs in a subprocess so its ChromaDB working set
+    # (~10 GiB of HNSW segments) is reclaimed by the kernel on exit, instead
+    # of staying resident in this long-lived process and tripping the cgroup cap.
     if CLEANUP_KEEP_BUILDS > 0:
         try:
-            logger.info(f"Starting cleanup, keeping {CLEANUP_KEEP_BUILDS} builds per job...")
-            cleanup_result = await core.cleanup_old_builds(keep_builds=CLEANUP_KEEP_BUILDS)
-            builds_deleted = cleanup_result.get("total_builds_deleted", 0)
-            chunks_deleted = cleanup_result.get("total_chunks_deleted", 0)
-            space_freed = cleanup_result.get("total_space_freed_mb", 0)
-            logger.info(f"Cleanup complete: {builds_deleted} builds deleted, {chunks_deleted} chunks removed, {space_freed:.2f} MB freed")
+            logger.info(f"Starting cleanup subprocess, keeping {CLEANUP_KEEP_BUILDS} builds per job...")
+            _log_mem("before_cleanup_subprocess")
+            cleanup_result = await _run_cleanup_subprocess(CLEANUP_KEEP_BUILDS)
+            _log_mem("after_cleanup_subprocess")
+            if cleanup_result.get("error"):
+                logger.error(f"Cleanup subprocess failed: {cleanup_result['error']}")
+                if cleanup_result.get("stdout_tail"):
+                    logger.error(f"Cleanup stdout tail: {cleanup_result['stdout_tail']}")
+            else:
+                builds_deleted = cleanup_result.get("total_builds_deleted", 0)
+                chunks_deleted = cleanup_result.get("total_chunks_deleted", 0)
+                space_freed = cleanup_result.get("total_space_freed_mb", 0)
+                logger.info(f"Cleanup complete: {builds_deleted} builds deleted, {chunks_deleted} chunks removed, {space_freed:.2f} MB freed")
         except Exception as e:
             logger.error(f"Error during cleanup: {e}", exc_info=True)
     else:
