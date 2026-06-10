@@ -595,7 +595,7 @@ CLEANUP_KEEP_BUILDS = int(os.getenv("CLEANUP_KEEP_BUILDS", "10"))
 # -1 disables. Default 2 (02:XX). Combined with min-uptime so we don't bounce.
 # MAX_LIFETIME_SECONDS: backstop in case the hourly check is missed. 0 disables.
 RESTART_AT_HOUR = int(os.getenv("RESTART_AT_HOUR", "-1"))
-MAX_LIFETIME_SECONDS = int(os.getenv("MAX_LIFETIME_SECONDS", "129600"))  # 36h backstop
+MAX_LIFETIME_SECONDS = int(os.getenv("MAX_LIFETIME_SECONDS", "604800"))  # 7d backstop
 _RESTART_MIN_UPTIME_SECONDS = 3600  # don't fire within 1h of startup
 _PROCESS_START_MONOTONIC = time.monotonic()
 

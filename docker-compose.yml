@@ -29,8 +29,10 @@ services:
       # memory on chunk delete. Hour is in the TZ below. -1 disables.
       - TZ=${TZ:-America/Los_Angeles}
       - RESTART_AT_HOUR=${RESTART_AT_HOUR:-2}
-      # Backstop in case the hourly check is missed (default 36h). 0 disables.
-      - MAX_LIFETIME_SECONDS=${MAX_LIFETIME_SECONDS:-129600}
+      # Backstop in case the hourly check is missed (default 7d). 0 disables.
+      # The daily RESTART_AT_HOUR is the primary trigger; this only catches
+      # the case where it somehow doesn't fire for a week.
+      - MAX_LIFETIME_SECONDS=${MAX_LIFETIME_SECONDS:-604800}
       # Memory instrumentation. Default off; enable temporarily to diagnose OOM.
       # MEMORY_MONITOR_INTERVAL_SECONDS=10 logs RSS every 10s.
       # TRACE_MEMORY=true also enables tracemalloc (top Python allocators per phase).

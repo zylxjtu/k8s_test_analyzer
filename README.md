@@ -30,7 +30,9 @@ docker compose down
 python mcp_server.py
 ```
 
-Connect via SSE: `http://localhost:8978/sse`
+Connect via Streamable HTTP: `http://localhost:8978/mcp`
+
+The server uses MCP's **stateless streamable-http** transport by default. Idle clients don't see errors when the server restarts (no persistent stream to break). To opt back into the legacy SSE transport, set `FASTMCP_TRANSPORT=sse` in `.env` — the endpoint then becomes `http://localhost:8978/sse`.
 
 ### Configuring Claude Code
 
@@ -40,7 +42,7 @@ To use the MCP server with Claude Code CLI:
 
 2. Add the server to Claude Code:
 ```bash
-claude mcp add --scope user --transport sse k8s-test-analyzer http://localhost:8978/sse
+claude mcp add --scope user --transport http k8s-test-analyzer http://localhost:8978/mcp
 ```
 
 3. Verify the connection:
@@ -65,8 +67,8 @@ To use the MCP server with Claude Desktop, add this to your Claude Desktop confi
 {
   "mcpServers": {
     "k8s-test-analyzer": {
-      "url": "http://localhost:8978/sse",
-      "transport": "sse"
+      "url": "http://localhost:8978/mcp",
+      "transport": "http"
     }
   }
 }
@@ -85,7 +87,7 @@ VS Code supports MCP servers for use with GitHub Copilot agent mode. To add this
 {
   "servers": {
     "k8s-test-analyzer": {
-      "url": "http://localhost:8978/sse",
+      "url": "http://localhost:8978/mcp",
       "type": "http"
     }
   }
@@ -119,16 +121,41 @@ All MCP tools are **read-only** and do not trigger downloads or indexing. Data m
 
 ### Environment Variables
 
+#### Core configuration
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FASTMCP_PORT` | `8978` | MCP server port |
+| `FASTMCP_TRANSPORT` | `streamable-http` | Transport: `streamable-http` (default) or `sse` (legacy) |
+| `FASTMCP_STATELESS_HTTP` | `true` | Stateless mode — no session IDs, survives restarts cleanly |
 | `PROJECTS_ROOT` | `${HOME}/.k8s-test-analyzer/cache` | Root directory for projects to index |
 | `DEFAULT_DASHBOARD` | `sig-windows-signal` | Default TestGrid dashboard |
 | `FOLDERS_TO_INDEX` | (auto-discover) | Comma-separated folders to index |
 | `ADDITIONAL_IGNORE_DIRS` | | Extra directories to ignore |
-| `SCHEDULE_INTERVAL_SECONDS` | `3600` | Scheduled task interval (0 to disable) |
-| `CLEANUP_KEEP_BUILDS` | `10` | Builds to keep per job during cleanup (0 to disable) |
+| `ADDITIONAL_IGNORE_FILES` | `containerd.log` | Extra filenames to skip during indexing |
+| `MAX_INDEX_FILE_SIZE_MB` | `20` | Skip log files larger than this during indexing (OOM guard) |
+| `SCHEDULE_INTERVAL_SECONDS` | `3600` | Scheduled download/index/cleanup interval (0 to disable) |
+| `CLEANUP_KEEP_BUILDS` | `3` | Builds to keep per job during cleanup (0 to disable) |
 | `HEALTHCHECK_MAX_AGE` | `300` | Heartbeat staleness threshold for Docker healthcheck (seconds) |
+
+#### Lifecycle / restart triggers
+
+ChromaDB 1.x doesn't unload collections from RAM once touched, so the long-lived MCP server accumulates resident state over time. These knobs let the process exit cleanly so Docker (with `restart: unless-stopped`) respawns it with a fresh memory state:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TZ` | `America/Los_Angeles` | Timezone used for the daily restart-hour check |
+| `RESTART_AT_HOUR` | `2` | Hour-of-day (0–23, local time) for the daily restart. -1 disables. |
+| `MAX_LIFETIME_SECONDS` | `604800` (7d) | Backstop: exit if the process has been running this long. 0 disables. |
+
+#### Memory diagnostics (default off)
+
+Enable these temporarily to instrument the running container. They are env-controlled so you don't have to edit code or rebuild the image:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMORY_MONITOR_INTERVAL_SECONDS` | `0` (off) | Log RSS every N seconds. Try `10` while investigating. |
+| `TRACE_MEMORY` | `false` | Also enable `tracemalloc`; log top Python allocators at each phase. |
 
 ---
 
@@ -298,6 +325,33 @@ DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) docker compose up -d
 docker compose logs -f
 ```
 
+### Maintenance
+
+#### Periodic SQLite VACUUM
+
+The chromadb cleanup pass `DELETE`s old build rows from `chroma.sqlite3` but SQLite doesn't shrink the file on its own — free pages accumulate. After a few months of churn the file is typically ~20–30% bloat. To reclaim that disk space:
+
+```bash
+./vacuum-chromadb.sh
+```
+
+The script stops the container, reports the live-vs-free byte breakdown, runs `VACUUM`, restarts the container, and prints the size delta. Run it monthly or whenever disk usage gets uncomfortable.
+
+VACUUM is atomic — safe to interrupt; the original file stays intact. It needs roughly **2× the current DB size** in free disk during the operation (rewrites a temp copy alongside the original).
+
+#### Container restart behavior
+
+By default the MCP server exits cleanly at **02:00 local time** (`RESTART_AT_HOUR=2`, `TZ=America/Los_Angeles`) and Docker respawns it. This drops the resident state that chromadb accumulates and acts as a safety net even though the cleanup subprocess (see Architecture) already returns most of the memory between cycles. To change or disable:
+
+```bash
+# In .env
+RESTART_AT_HOUR=2                  # 0–23 local hour, or -1 to disable
+TZ=America/Los_Angeles             # timezone for the hour check
+MAX_LIFETIME_SECONDS=604800        # 7-day backstop in case the hourly check misses
+```
+
+The 12 GiB Docker memory cap in `docker-compose.yml` enforces a hard ceiling. If something allocates past it, only the container is OOM-killed (and Docker restarts it) — the host stays healthy.
+
 ### Configuration
 
 #### Environment Setup
@@ -333,9 +387,11 @@ k8s-test-analyzer/
 ├── mcp_server.py               # MCP server - tool wrappers calling core.py
 ├── cli.py                      # CLI entry point - mirrors MCP tools
 ├── local_indexing.py           # ChromaDB initialization and indexing logic
+├── cleanup_worker.py           # Subprocess invoked by the MCP server for cleanup
 ├── Dockerfile                  # Docker image definition
 ├── docker-compose.yml          # Docker Compose configuration
 ├── generate-env.sh             # Script to generate .env from .env.template
+├── vacuum-chromadb.sh          # Operator script: stop, VACUUM, restart
 ├── .env.template               # Environment template (tracked in git)
 ├── k8s_testlog_downloader/     # Data collection library
 │   ├── __init__.py
@@ -356,6 +412,7 @@ k8s-test-analyzer/
 - **mcp_server.py**: Thin wrapper that exposes core.py functions as MCP tools via FastMCP.
 - **cli.py**: CLI application that exposes core.py functions as command-line commands.
 - **local_indexing.py**: ChromaDB/LlamaIndex integration for vector storage and semantic search.
+- **cleanup_worker.py**: Run as a subprocess by the MCP server each cleanup pass. ChromaDB 1.x keeps HNSW segments resident in process memory once a collection is touched; running cleanup in a transient process means the kernel reclaims that memory on the worker's exit, keeping the long-lived MCP server's RSS flat.
 
 This architecture ensures that:
 1. CLI and MCP server have identical behavior (they use the same code)
