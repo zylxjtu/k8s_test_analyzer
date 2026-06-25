@@ -1055,6 +1055,9 @@ def get_indexing_lock():
     This lock should be acquired before any ChromaDB write operations
     to prevent concurrent writes that can corrupt the HNSW index.
 
+    Lazy-inits on first call (same as the internal _get_indexing_lock) so the
+    standalone cleanup_worker subprocess gets a real lock instead of None.
+
     Usage:
         async with get_indexing_lock():
             # Perform ChromaDB write operations
@@ -1062,7 +1065,7 @@ def get_indexing_lock():
     Returns:
         asyncio.Lock instance
     """
-    return _indexing_lock
+    return _get_indexing_lock()
 
 
 def delete_build_from_index(collection_name: str, build_id: str) -> dict:
