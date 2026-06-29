@@ -666,22 +666,23 @@ async def _memory_monitor():
         logger.info(f"[MEM-MON] RSS={cur:.0f}MB peak={peak:.0f}MB")
 
 
-async def _run_cleanup_subprocess(keep_builds: int) -> dict:
-    """Run cleanup_old_builds in an isolated subprocess.
+async def _run_cycle_subprocess(keep_builds: int) -> dict:
+    """Run one full cycle (download + index + cleanup) in an isolated subprocess.
 
-    Why: ChromaDB 1.x keeps HNSW segments resident in process memory once
-    a collection is touched, and cleanup touches every collection that
-    has builds to delete. Done in-process, that's ~10 GiB of accumulating
-    RSS per cycle, which trips the 12 GiB cgroup cap. Done in a subprocess,
-    the kernel reclaims all that memory on the child's exit while this
-    long-lived MCP server stays at its post-indexing baseline.
+    Why: sentence-transformers holds the GIL during embedding batches, which
+    starves this event loop and makes the MCP HTTP handler unresponsive to
+    clients during indexing. ChromaDB's HNSW segments also stay resident in
+    the process memory once a collection is touched, so heavy cycles bloat
+    the long-lived process. Spawning a transient worker isolates both
+    problems: the kernel reclaims everything on the child's exit, and this
+    process's event loop is free throughout.
 
-    On success: returns the dict from core.cleanup_old_builds.
+    On success: returns the dict from cycle_worker.main() — {"download_and_index": {...}, "cleanup": {...}}.
     On failure: returns {"error": "...", optional "stdout_tail": "..."}.
     """
-    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanup_worker.py")
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cycle_worker.py")
     if not os.path.exists(worker):
-        return {"error": f"cleanup_worker.py not found at {worker}"}
+        return {"error": f"cycle_worker.py not found at {worker}"}
 
     # stdout: capture for the JSON result line.
     # stderr: inherit so worker info/error logs flow live into docker logs.
@@ -693,24 +694,25 @@ async def _run_cleanup_subprocess(keep_builds: int) -> dict:
     )
 
     try:
-        # 15 min cap. Real cleanup is ~3 min; 15 covers slow disks + degenerate cases.
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+        # 2 hour cap. Real cycles are usually <30 min but a big new build with
+        # hundreds of multi-MB log files can push past an hour. The daily
+        # restart at 2 AM is the safety net for true runaways.
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=7200)
     except asyncio.TimeoutError:
-        logger.error("Cleanup subprocess timed out after 900s; killing")
+        logger.error("Cycle subprocess timed out after 2h; killing")
         proc.kill()
         await proc.wait()
-        return {"error": "cleanup subprocess timed out after 900s"}
+        return {"error": "cycle subprocess timed out after 7200s"}
 
     if proc.returncode != 0:
         return {
-            "error": f"cleanup subprocess exited with code {proc.returncode}",
+            "error": f"cycle subprocess exited with code {proc.returncode}",
             "stdout_tail": stdout.decode("utf-8", errors="replace")[-500:],
         }
 
-    # Worker writes its result as the final stdout line. Parse just that.
     text = stdout.decode("utf-8", errors="replace").strip()
     if not text:
-        return {"error": "cleanup subprocess produced no output"}
+        return {"error": "cycle subprocess produced no output"}
     last_line = text.split("\n")[-1]
     try:
         return json.loads(last_line)
@@ -722,53 +724,47 @@ async def _run_cleanup_subprocess(keep_builds: int) -> dict:
 
 
 async def run_download_and_cleanup():
-    """Execute the download, index, and cleanup operations once."""
+    """Execute one download → index → cleanup cycle in a subprocess.
+
+    Heavy work runs out-of-process so the MCP HTTP handler stays responsive
+    to clients throughout. Returns False on subprocess failure, True on
+    success (so the periodic loop can log + continue either way).
+    """
     write_heartbeat()  # Start of task
-    logger.info("Starting scheduled download and reindex...")
-    _log_mem("cycle_start")
+    logger.info("Starting scheduled cycle (download + index + cleanup) subprocess...")
+    _log_mem("before_cycle_subprocess")
 
-    # Download and index new builds
-    try:
-        result = await core.download_all_and_index(skip_indexing=False)
-        write_heartbeat()  # After download/index
-        _log_mem("after_download_and_index")
+    cycle_result = await _run_cycle_subprocess(CLEANUP_KEEP_BUILDS)
 
-        if "error" in result:
-            logger.error(f"Download failed: {result.get('error')}")
-            return False
+    write_heartbeat()  # After subprocess
+    _log_mem("after_cycle_subprocess")
 
-        tabs_count = len(result.get("tabs", {}))
-        indexed_count = result.get("indexing_summary", {}).get("total_indexed", 0)
-        logger.info(f"Download complete: {tabs_count} tabs, indexed {indexed_count} projects")
-
-    except Exception as e:
-        logger.error(f"Error during download/index: {e}", exc_info=True)
-        write_heartbeat()  # Update even on error
-        _log_mem("after_download_index_error")
+    if cycle_result.get("error"):
+        logger.error(f"Cycle subprocess failed: {cycle_result['error']}")
+        if cycle_result.get("stdout_tail"):
+            logger.error(f"Cycle stdout tail: {cycle_result['stdout_tail']}")
         return False
 
-    # Clean up old builds — runs in a subprocess so its ChromaDB working set
-    # (~10 GiB of HNSW segments) is reclaimed by the kernel on exit, instead
-    # of staying resident in this long-lived process and tripping the cgroup cap.
-    if CLEANUP_KEEP_BUILDS > 0:
-        try:
-            logger.info(f"Starting cleanup subprocess, keeping {CLEANUP_KEEP_BUILDS} builds per job...")
-            _log_mem("before_cleanup_subprocess")
-            cleanup_result = await _run_cleanup_subprocess(CLEANUP_KEEP_BUILDS)
-            _log_mem("after_cleanup_subprocess")
-            if cleanup_result.get("error"):
-                logger.error(f"Cleanup subprocess failed: {cleanup_result['error']}")
-                if cleanup_result.get("stdout_tail"):
-                    logger.error(f"Cleanup stdout tail: {cleanup_result['stdout_tail']}")
-            else:
-                builds_deleted = cleanup_result.get("total_builds_deleted", 0)
-                chunks_deleted = cleanup_result.get("total_chunks_deleted", 0)
-                space_freed = cleanup_result.get("total_space_freed_mb", 0)
-                logger.info(f"Cleanup complete: {builds_deleted} builds deleted, {chunks_deleted} chunks removed, {space_freed:.2f} MB freed")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}", exc_info=True)
+    dl = cycle_result.get("download_and_index", {}) or {}
+    cl = cycle_result.get("cleanup", {}) or {}
+
+    if "error" in dl:
+        logger.error(f"Download/index reported error: {dl.get('error')}")
     else:
-        logger.info("Cleanup disabled (CLEANUP_KEEP_BUILDS=0)")
+        tabs_count = len(dl.get("tabs", {}))
+        indexed_count = dl.get("indexing_summary", {}).get("total_indexed", 0)
+        logger.info(f"Download complete: {tabs_count} tabs, indexed {indexed_count} projects")
+
+    # Cleanup result also came back from the same subprocess. Just log it.
+    if cl.get("skipped"):
+        logger.info(f"Cleanup skipped: {cl.get('reason', 'unknown reason')}")
+    elif "error" in cl:
+        logger.error(f"Cleanup reported error: {cl.get('error')}")
+    else:
+        builds_deleted = cl.get("total_builds_deleted", 0)
+        chunks_deleted = cl.get("total_chunks_deleted", 0)
+        space_freed = cl.get("total_space_freed_mb", 0)
+        logger.info(f"Cleanup complete: {builds_deleted} builds deleted, {chunks_deleted} chunks removed, {space_freed:.2f} MB freed")
 
     write_heartbeat()  # End of task
     _log_mem("cycle_end")
