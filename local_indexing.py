@@ -1000,40 +1000,6 @@ async def _index_project_impl(project_name: str, force: bool = False) -> dict:
         return {"success": False, "error": str(e)}
 
 
-async def perform_initial_indexing():
-    """Index all existing folders in projects_root at startup."""
-    try:
-        projects_root = config["projects_root"]
-        if not os.path.exists(projects_root):
-            logger.warning(f"Projects root does not exist: {projects_root}")
-            return
-        
-        # Get all folders to index (auto-discovered or configured)
-        folders = config.get("folders_to_index", [])
-        if not folders:
-            folders = auto_discover_folders(projects_root, set(config["ignore_dirs"]))
-        
-        if not folders:
-            logger.info("No folders found to index at startup")
-            return
-        
-        logger.info(f"Starting initial indexing of {len(folders)} folders...")
-        
-        for folder in folders:
-            if not folder:  # Skip empty folder names
-                continue
-            result = await index_project(folder)
-            if result.get("success"):
-                logger.info(f"Indexed {folder}: {result.get('documents_indexed', 0)} documents")
-            else:
-                logger.warning(f"Failed to index {folder}: {result.get('error', 'Unknown error')}")
-        
-        logger.info("Initial indexing complete")
-        
-    except Exception as e:
-        logger.error(f"Error during initial indexing: {e}")
-
-
 def get_chroma_client():
     """Get the ChromaDB client."""
     return chroma_client

@@ -16,7 +16,7 @@ import yaml
 from fastmcp import FastMCP
 
 # Local imports
-from local_indexing import initialize_chromadb, perform_initial_indexing, write_heartbeat
+from local_indexing import initialize_chromadb, write_heartbeat
 import core
 
 # Configure logging
@@ -824,12 +824,12 @@ async def main():
 
     if success:
         logger.info("ChromaDB initialized successfully")
-        # Run initial indexing in background so the MCP server can accept connections immediately
-        asyncio.create_task(perform_initial_indexing())
     else:
         logger.warning("ChromaDB initialization had issues, some features may not work")
 
-    # Start background scheduled task (only if ChromaDB initialized — indexing requires it)
+    # Start background scheduled task. It runs run_download_and_cleanup()
+    # immediately on startup (which subsumes what perform_initial_indexing
+    # used to do, but in a subprocess so the MCP server stays responsive).
     if SCHEDULE_INTERVAL_SECONDS > 0 and success:
         logger.info(f"Starting scheduled download/reindex task (interval: {SCHEDULE_INTERVAL_SECONDS}s)")
         asyncio.create_task(scheduled_download_and_reindex())
