@@ -47,7 +47,11 @@ class TestGridClient:
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
-    
+
+        # Cache of resolved prowjob names keyed by (dashboard, tab) to avoid
+        # repeatedly fetching the (relatively heavy) table endpoint.
+        self._prowjob_cache: dict[tuple[str, str], str] = {}
+
     def _request_with_retry(self, url: str, max_retries: int = 3) -> Optional[requests.Response]:
         """Make a GET request with retry logic for connection errors.
 
@@ -193,6 +197,29 @@ class TestGridClient:
     
     def get_prowjob_name(self, dashboard: str, tab: str) -> Optional[str]:
         """Get prowjob name (GCS directory) for a TestGrid tab."""
+        cache_key = (dashboard, tab)
+        if cache_key in self._prowjob_cache:
+            return self._prowjob_cache[cache_key]
+
+        # The summary endpoint only lists *alerting* tests, so its '.Overall'
+        # entry is absent for healthy tabs. Fall back to the table endpoint,
+        # which always exposes the job's GCS location.
+        prowjob = self._get_prowjob_from_summary(dashboard, tab)
+        if not prowjob:
+            prowjob = self._get_prowjob_from_table(dashboard, tab)
+        if not prowjob:
+            prowjob = self._pattern_based_job_name(tab)
+
+        if prowjob:
+            self._prowjob_cache[cache_key] = prowjob
+        return prowjob
+
+    def _get_prowjob_from_summary(self, dashboard: str, tab: str) -> Optional[str]:
+        """Resolve the prowjob name from the dashboard summary.
+
+        Only works when the tab currently has alerting tests, since the summary's
+        'tests' array only contains failing tests (it is empty for healthy tabs).
+        """
         url = f"{TESTGRID_BASE_URL}/{dashboard}/summary"
         try:
             response = self._request_with_retry(url)
@@ -211,10 +238,43 @@ class TestGridClient:
                         if re.match(r'^[a-z0-9][a-z0-9-]+$', candidate):
                             return candidate
         except Exception as e:
-            logger.warning(f"Failed to fetch prowjob name: {e}")
-        
-        return self._pattern_based_job_name(tab)
-    
+            logger.warning(f"Failed to fetch prowjob name from summary: {e}")
+        return None
+
+    def _get_prowjob_from_table(self, dashboard: str, tab: str) -> Optional[str]:
+        """Resolve the prowjob name from the TestGrid table endpoint.
+
+        Unlike the summary endpoint, the table endpoint always reports the job's
+        GCS location via the 'query' field (e.g.
+        "kubernetes-ci-logs/logs/ci-kubernetes-e2enode-windows-master") and an
+        "<job>.Overall" row, so it resolves correctly for healthy tabs too.
+        """
+        url = f"{TESTGRID_BASE_URL}/{dashboard}/table?tab={tab}"
+        try:
+            response = self._request_with_retry(url)
+            if not (response and response.status_code == 200):
+                return None
+            data = response.json()
+
+            # Primary: the 'query' field holds the full GCS path; the job name is
+            # its last path component.
+            query = data.get('query')
+            if isinstance(query, str) and query.strip():
+                candidate = query.rstrip('/').split('/')[-1]
+                if re.match(r'^[a-z0-9][a-z0-9-]+$', candidate):
+                    return candidate
+
+            # Fallback: find the "<job>.Overall" row.
+            for row in data.get('tests', []):
+                name = row.get('name', '')
+                if name.endswith('.Overall'):
+                    candidate = name[:-len('.Overall')]
+                    if re.match(r'^[a-z0-9][a-z0-9-]+$', candidate):
+                        return candidate
+        except Exception as e:
+            logger.warning(f"Failed to fetch prowjob name from table: {e}")
+        return None
+
     def _pattern_based_job_name(self, tab: str) -> Optional[str]:
         """Fallback pattern-based job name resolution."""
         if 'capz-windows' in tab:
